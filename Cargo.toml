@@ -1,0 +1,11 @@
+[package]
+name = "weave"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+drama_llama = "0.2"
+egui_node_graph = "0.4.0"
+eframe = "0.21.0"
+serde = { version = "1.0", features = ["derive"] }
+derive_more = "0.99.17"

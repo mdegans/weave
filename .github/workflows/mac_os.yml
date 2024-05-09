@@ -1,0 +1,23 @@
+# Copilot generated GitHub Actions workflow for macOS
+name: Rust Tests and Coverage
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install LLVM tools
+        run: brew install llvm
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      - name: Run tests with coverage
+        run: cargo llvm-cov --workspace --lcov
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v2
+        with:
+          files: ./target/llvm-cov/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: true
