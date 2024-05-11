@@ -2,13 +2,16 @@
 #![cfg_attr(not(debug_assertions), deny(warnings))] // Forbid warnings in release builds
 #![warn(clippy::all, rust_2018_idioms)]
 
+#[cfg(feature = "gui")]
 pub mod app;
+
 pub mod node;
 pub mod story;
 
 // ----------------------------------------------------------------------------
 // When compiling for web:
 
+#[cfg(feature = "gui")]
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::{self, prelude::*};
 

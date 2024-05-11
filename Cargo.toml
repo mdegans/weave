@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-drama_llama = "0.2"
-egui_node_graph = "0.4.0"
-eframe = "0.21.0"
 serde = { version = "1.0", features = ["derive"] }
+drama_llama = "0.2"
+egui = { version = "0.27", features = ["persistence"], optional = true }
+eframe = { version = "0.27", features = ["persistence"], optional = true }
 derive_more = "0.99.17"
+serde_json = "1.0"
+uuid = { version = "1.8", features = ["v4", "fast-rng"] }
+
+[features]
+default = []
+gui = ["egui", "eframe"]

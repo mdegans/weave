@@ -1,15 +1,16 @@
-use eframe::epaint::ahash::HashMap;
+use std::{collections::HashMap, fmt::write};
+
 use serde::{Deserialize, Serialize};
 
-use crate::node::Node;
+use crate::node::{Meta, Node};
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Story {
-    active: Option<Vec<usize>>,
-    title: String,
+    active_path: Option<Vec<usize>>,
+    pub title: String,
     author_to_id: HashMap<String, u8>,
     id_to_author: Vec<String>,
-    root: Node,
+    root: Node<Meta>,
 }
 
 #[derive(derive_more::From)]
@@ -25,10 +26,6 @@ impl From<&str> for AuthorID {
 }
 
 impl Story {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn with_title(title: String) -> Self {
         Self {
             title,
@@ -38,16 +35,16 @@ impl Story {
 
     /// Get the head node of the story. `head` is like git's `HEAD` and
     /// represents the current node the story is at.
-    pub fn head(&self) -> &Node {
-        match &self.active {
+    pub fn head(&self) -> &Node<Meta> {
+        match &self.active_path {
             Some(path) => self.root.iter_path_nodes(path).last().unwrap(),
             None => &self.root,
         }
     }
 
     /// Get mutable head node of the story.
-    pub fn head_mut(&mut self) -> &mut Node {
-        match &self.active {
+    pub fn head_mut(&mut self) -> &mut Node<Meta> {
+        match &self.active_path {
             Some(path) => {
                 let mut node = &mut self.root;
                 for &i in path {
@@ -109,50 +106,63 @@ impl Story {
     ) where
         Id: Into<AuthorID>,
     {
-        let author_id = self.get_author(author).unwrap();
+        let author = self.get_author(author).unwrap();
         let head = self.head_mut();
-        let child_index = head.add_child(Node::default());
-        head.children[child_index].extend_strings(author_id, strings);
-        if let Some(path) = &mut self.active {
+        let child_index = head.add_child(Node::with_author(author));
+        let head = &mut head.children[child_index];
+        head.extend_strings(strings);
+        if let Some(path) = &mut self.active_path {
             path.push(child_index);
         } else {
-            self.active = Some(vec![child_index]);
+            self.active_path = Some(vec![child_index]);
         }
     }
 
     /// Extend the current paragraph with strings.
-    pub fn extend_paragraph<Id>(
+    pub fn extend_paragraph(
         &mut self,
-        author: Id,
         strings: impl IntoIterator<Item = impl Into<String>>,
-    ) where
-        Id: Into<AuthorID>,
-    {
-        let author_id = match author.into() {
-            AuthorID::String(author) => self.add_author(&author),
-            AuthorID::ID(id) => {
-                assert!(id < self.id_to_author.len() as u8, "Invalid author id");
-                id
-            }
-        };
-        self.head_mut().extend_strings(author_id, strings);
+    ) {
+        self.head_mut().extend_strings(strings);
+    }
+
+    /// Draw UI for the story.
+    #[cfg(feature = "gui")]
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
+        ui.label(self.to_string());
+
+        // Draw, and update active path if changed.
+        if let Some(new_path) = self
+            .root
+            .draw(ui, self.active_path.as_ref().map(|v| v.as_slice()))
+        {
+            self.active_path = Some(new_path);
+        }
     }
 }
 
 impl std::fmt::Display for Story {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "# {}\n\nBy:", self.title)?;
-        for (_, author) in self.authors() {
-            writeln!(f, "- {}", author)?;
+        writeln!(f, "# {}", self.title)?;
+        if self.author_to_id.is_empty() {
+            writeln!(f, "By: Anonymous")?;
+        } else {
+            writeln!(f, "By:")?;
+            for (_, author) in self.authors() {
+                writeln!(f, "- {}", author)?;
+            }
         }
-        match &self.active {
+
+        write!(f, "\n")?;
+
+        match &self.active_path {
             Some(path) => {
                 for s in self.root.iter_path_text(&path, "\n") {
                     write!(f, "{}", s)?;
                 }
             }
             None => {
-                for s in self.root.iter_text() {
+                for s in self.root.iter_pieces() {
                     write!(f, "{}", s)?;
                 }
             }
@@ -172,13 +182,13 @@ mod tests {
         story.add_author("Alice");
         assert_eq!(Some(0), story.get_author("Alice"));
         story.add_paragraph("Alice", ["Hello", " World"]);
-        let id = story.add_author("Bob");
+        story.add_author("Bob");
         assert_eq!(Some(1), story.get_author("Bob"));
         story.add_paragraph(1, ["Goodbye", " World"]);
-        story.extend_paragraph(id, ["!"]);
+        story.extend_paragraph(["!"]);
         assert_eq!(
             story.to_string(),
-            "# Test\n\nBy:\n- Alice\n- Bob\n\nHello World\nGoodbye World!"
+            "# Test\nBy:\n- Alice\n- Bob\n\n\nHello World\nGoodbye World!"
         );
         ["Alice", "Bob"]
             .iter()

@@ -13,11 +13,11 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Run tests with coverage
-        run: cargo llvm-cov --workspace --lcov
+        run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v2
         with:
-          files: ./target/llvm-cov/lcov.info
+          files: ./target/lcov.info
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: true
