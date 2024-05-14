@@ -109,7 +109,10 @@ impl Worker {
                     }
                 };
 
-                // Add any model-specific stop criteria.
+                // Add any model-specific stop criteria. We do want to check
+                // here rather than add it to the settings because if the user
+                // changes model, the tokens will be different, but still in the
+                // stop criteria, which would result in unexpected behavior.
                 let opts = opts.add_model_stops(&engine.model);
 
                 // Tokenize the text, predict pieces, and send them back.

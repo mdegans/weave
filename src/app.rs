@@ -5,20 +5,6 @@ pub struct Toolbar {
     pub title_buf: String,
 }
 
-pub struct Viewport {
-    pub scroll: egui::Vec2,
-    pub zoom: f32,
-}
-
-impl Default for Viewport {
-    fn default() -> Self {
-        Self {
-            scroll: Default::default(),
-            zoom: 1.0,
-        }
-    }
-}
-
 #[derive(Default, derive_more::Display)]
 pub enum SidebarPage {
     #[default]
@@ -341,6 +327,22 @@ impl App {
 
             self.update_generation(&mut new_pieces);
 
+            // TODO: make it possible to scroll the node view. The nodes are
+            // currently windows which cannot be in a scroll area. They float.
+            // It would have been nice to know this before, but oh well. One
+            // solution suggested in the following issue is to use an area
+            // within an area:
+            // https://github.com/emilk/egui/discussions/3290
+            // Another is to make a custom widget. Either is a bunch of work,
+            // but the latter might be more flexible. `Window` also does a lot
+            // we don't actually need.
+            // Probably less work is actually use `wgpu` to render the nodes in
+            // the viewport. It's less work than it sounds, and probably less
+            // than the other solutions which might integrate better with egui,
+            // but might be more work to implement and maintain. A `wgpu`
+            // solution might perform better as well and I have some experience
+            // with it.
+            // In the meantime, the windows are, at least, collapsible.
             if let Some(story) = self.story_mut() {
                 story.draw(ui);
                 story.extend_paragraph(new_pieces);
@@ -397,15 +399,25 @@ impl App {
                         new_pieces.push(piece);
                     }
                     crate::drama_llama::Response::Done => {
+                        // Trim whitespace from the end of the story. The
+                        // Predictor currently keeps any end sequence, which
+                        // might be whitespace.
+                        // TODO: add a setting to control this behavior in
+                        // `drama_llama`
+                        if let Some(story) = self.story_mut() {
+                            story.head_mut().trim_end_whitespace();
+                        }
+                        // We can unlock the UI now.
                         self.generation_in_progress = false;
-                        // TODO: strip any trailing whitespace. This will
-                        // require some changes to `Node` so that a valid piece
-                        // is still at the end. (we can't just trim the text).
                     }
                     crate::drama_llama::Response::Busy { command } => {
-                        // This might happen because of data races.
+                        // This might happen because of data races, but really
+                        // shouldn't.
                         // TODO: gui error message
-                        todo!("gui error message: {:?}", command)
+                        log::error!(
+                            "Unexpected command sent to worker. Report this please: {:?}",
+                            command
+                        )
                     }
                 },
                 None => {

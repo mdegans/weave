@@ -193,6 +193,24 @@ impl<T> Node<T> {
             .flatten()
             .skip(1)
     }
+
+    /// Trim whitespace from the end of the text and adjust the pieces.
+    pub fn trim_end_whitespace(&mut self) {
+        let len = self.text.trim_end().len();
+        self.text.truncate(len);
+        while let Some(piece) = self.pieces.last() {
+            if piece.end > len {
+                self.pieces.pop();
+            } else {
+                break;
+            }
+        }
+        // finally, we need to insert a new piece if the last one is not at the
+        // end of the text
+        if self.pieces.last().map_or(true, |p| p.end != len) {
+            self.pieces.push(Piece { end: len });
+        }
+    }
 }
 
 impl<T> std::fmt::Display for Node<T> {
