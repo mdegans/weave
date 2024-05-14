@@ -9,6 +9,8 @@ fn main() {
     use eframe::egui::Visuals;
     use weave::app::App;
 
+    env_logger::init();
+
     eframe::run_native(
         "Weave",
         eframe::NativeOptions::default(),

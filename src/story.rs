@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::write};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,11 +26,15 @@ impl From<&str> for AuthorID {
 }
 
 impl Story {
-    pub fn with_title(title: String) -> Self {
-        Self {
+    pub fn new(title: String, author: String) -> Self {
+        let mut new = Self {
             title,
             ..Self::default()
-        }
+        };
+
+        new.add_author(author);
+
+        new
     }
 
     /// Get the head node of the story. `head` is like git's `HEAD` and
@@ -139,21 +143,40 @@ impl Story {
             self.active_path = Some(new_path);
         }
     }
-}
 
-impl std::fmt::Display for Story {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "# {}", self.title)?;
-        if self.author_to_id.is_empty() {
-            writeln!(f, "By: Anonymous")?;
-        } else {
-            writeln!(f, "By:")?;
-            for (_, author) in self.authors() {
-                writeln!(f, "- {}", author)?;
+    /// Convert the story to a string with options
+    pub fn format_full<F>(
+        &self,
+        mut f: F,
+        include_authors: bool,
+        include_title: bool,
+    ) -> std::fmt::Result
+    where
+        F: std::fmt::Write,
+    {
+        if include_title {
+            let title = if self.title.is_empty() {
+                crate::consts::DEFAULT_TITLE
+            } else {
+                &self.title
+            };
+            writeln!(f, "# {}", title)?;
+        }
+
+        if include_authors {
+            if self.author_to_id.is_empty() {
+                writeln!(f, "By: {}", crate::consts::DEFAULT_AUTHOR)?;
+            } else {
+                writeln!(f, "By:")?;
+                for (_, author) in self.authors() {
+                    writeln!(f, "- {}", author)?;
+                }
             }
         }
 
-        write!(f, "\n")?;
+        if include_authors | include_title {
+            write!(f, "\n")?;
+        }
 
         match &self.active_path {
             Some(path) => {
@@ -172,14 +195,19 @@ impl std::fmt::Display for Story {
     }
 }
 
+impl std::fmt::Display for Story {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.format_full(f, true, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_story() {
-        let mut story = Story::with_title("Test".to_string());
-        story.add_author("Alice");
+        let mut story = Story::new("Test".to_string(), "Alice".to_string());
         assert_eq!(Some(0), story.get_author("Alice"));
         story.add_paragraph("Alice", ["Hello", " World"]);
         story.add_author("Bob");

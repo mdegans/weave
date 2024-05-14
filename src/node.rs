@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicUsize;
 
 /// A piece of the text. Generally representing a detokenized token.
 // In the future this may contain per-piece metadata.
@@ -246,6 +245,7 @@ impl Node<Meta> {
             }
 
             // Draw the node.
+            // TODO: Node deletion.
             let selected = node.draw_one(ui, highlight_node);
             if selected {
                 ret = Some(current_path.clone());

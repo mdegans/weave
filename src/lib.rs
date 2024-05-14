@@ -5,7 +5,12 @@
 #[cfg(feature = "gui")]
 pub mod app;
 
+#[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+pub(crate) mod drama_llama;
+
+pub mod consts;
 pub mod node;
+pub mod settings;
 pub mod story;
 
 // ----------------------------------------------------------------------------
