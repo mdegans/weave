@@ -14,9 +14,13 @@ log = "0.4"
 env_logger = "0.11"
 uuid = { version = "1.8", features = ["v4", "fast-rng"] }
 
+tokio = { version = "1", optional = true }
+futures = { version = "0.3", features = ["executor"], optional = true }
+keyring = { version = "2", optional = true }
+
 ollama-rs = { version = "0.1.9", optional = true }
 drama_llama = { version = "0.3", optional = true }
-openai = { version = "1.0.0-alpha.14", optional = true }
+openai-rust = { version = "1.5", optional = true }
 
 [features]
 default = []
@@ -29,7 +33,13 @@ drama_llama = [
     "drama_llama/cli",
     "dep:egui_file",
 ]
-openai = ["generate", "dep:openai"]
+openai = [
+    "generate",
+    "dep:openai-rust",
+    "dep:futures",
+    "dep:keyring",
+    "dep:tokio",
+]
 ollama = ["generate", "dep:ollama-rs"]
 # TODO: Claude does not yet have a good rust library. Will have to use reqwests
 # for the feature.

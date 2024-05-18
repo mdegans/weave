@@ -50,7 +50,11 @@ pub enum BackendOptions {
     #[cfg(feature = "ollama")]
     Ollama,
     #[cfg(feature = "openai")]
-    OpenAI,
+    OpenAI {
+        /// OpenAI settings
+        #[serde(default)]
+        settings: crate::openai::Settings,
+    },
     #[cfg(feature = "claude")]
     Claude,
 }
@@ -66,6 +70,10 @@ impl BackendOptions {
                     f.to_str().unwrap_or(crate::consts::DEFAULT_MODEL_NAME)
                 })
                 .unwrap_or(crate::consts::DEFAULT_MODEL_NAME),
+            #[cfg(feature = "openai")]
+            BackendOptions::OpenAI { settings } => {
+                &settings.chat_arguments.model
+            }
             #[allow(unreachable_patterns)] // because the number of backends can
             // change based on features and if only one is left, we get a
             // warning we don't want to see.
@@ -88,9 +96,18 @@ impl BackendOptions {
             #[cfg(feature = "ollama")]
             GenerativeBackend::Ollama => BackendOptions::Ollama,
             #[cfg(feature = "openai")]
-            GenerativeBackend::OpenAI => BackendOptions::OpenAI,
+            GenerativeBackend::OpenAI => BackendOptions::OpenAI {
+                settings: Default::default(),
+            },
             #[cfg(feature = "claude")]
             GenerativeBackend::Claude => BackendOptions::Claude,
+        }
+    }
+
+    pub fn as_openai(&self) -> Option<&crate::openai::Settings> {
+        match self {
+            BackendOptions::OpenAI { settings } => Some(settings),
+            _ => None,
         }
     }
 }
@@ -170,7 +187,6 @@ impl Settings {
 
         use std::num::NonZeroU128;
 
-        use drama_llama::PredictOptions;
         ui.label("Generative backend:");
         egui::ComboBox::from_label("Backend")
             .selected_text(self.selected_generative_backend.to_string())
@@ -185,6 +201,20 @@ impl Settings {
                         .selectable_label(active, backend.to_string())
                         .clicked()
                     {
+                        // We need to shutdown the worker if we're changing
+                        // backends because the worker is tied to the backend.
+                        // FIXME: Because the app has the worker, we should
+                        // return something indicating the worker should be
+                        // restarted. I can't think of another way. If we do
+                        // that, we can't change it immediatly here, but should
+                        // return the selected backend and then change it in the
+                        // App::update method. It's a bit of a mess.
+                        // Alternatively we could move the workers into the
+                        // settings struct. It's a bit odd but it would work and
+                        // might be cleaner. As it stands, a running worker for
+                        // a given backend will keep running until the app is
+                        // closed. That might not be terrible, but some backends
+                        // can use a lot of resources, like the local models.
                         self.selected_generative_backend = *backend;
                     }
                 }
@@ -192,12 +222,16 @@ impl Settings {
 
         match self.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            // FIXME: we should do like with `openai` below an have a settings
+            // struct with a ui method. This function is getting too long.
             BackendOptions::DramaLlama {
                 model,
                 predict_options,
                 file_dialog,
                 max_context_size,
             } => {
+                use drama_llama::PredictOptions;
+
                 // Choose model
                 ui.label(format!("Model: {:?}", model));
                 if ui.button("Change model").clicked() {
@@ -355,6 +389,11 @@ impl Settings {
                 // TODO: Add ui for options. This is perhaps better done in
                 // the drama_llama crate.
             }
+            #[cfg(feature = "openai")]
+            BackendOptions::OpenAI { settings } => {
+                settings.ui(ui);
+            }
+
             #[allow(unreachable_patterns)] // because same as above
             _ => {}
         }
@@ -409,11 +448,16 @@ impl Settings {
         }
     }
 
-    /// This should be called once on startup to verify the current settings
-    /// suit the selected model. It's the same as `configure_for_new_local_model`
-    /// only it checks the current model path.
+    /// This should be called once on startup to configure the backend settings,
+    /// for example, validating a local model or fetching a list of models from
+    /// OpenAI.
+    ///
+    /// This function may block briefly, but keep in mind any blocking will slow
+    /// down app startup.
+    // TODO: see if we can run this in a separate thread, but it makes things
+    // much more complicated for little gain.
     #[cfg(feature = "generate")]
-    pub fn configure_for_current_local_model(&mut self) {
+    pub fn setup(&mut self) {
         match self.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             BackendOptions::DramaLlama {
@@ -427,13 +471,18 @@ impl Settings {
                     Self::drama_llama_helper(model, max_context_size, &new);
                 }
             }
+            #[cfg(feature = "openai")]
+            BackendOptions::OpenAI { ref mut settings } => {
+                Self::openai_helper(settings);
+            }
+            #[allow(unreachable_patterns)] // because same as above
             _ => {}
         }
     }
 
-    /// A helper to configure the settings, avoiding a mutable borrow of self
-    /// because we can't call it our draw code otherwise.
-    #[cfg(feature = "generate")]
+    /// A helper to configure `drama_llama` settings, avoiding a mutable borrow
+    /// of self because we can't call it our draw code otherwise.
+    #[cfg(feature = "drama_llama")]
     pub(crate) fn drama_llama_helper(
         model_path: &mut std::path::PathBuf,
         model_context_len: &mut usize,
@@ -462,6 +511,19 @@ impl Settings {
         }
 
         *model_path = desired_path.to_path_buf();
+    }
+
+    /// A helper to configure OpenAI settings
+    #[cfg(feature = "openai")]
+    pub(crate) fn openai_helper(settings: &mut crate::openai::Settings) {
+        if let Err(e) = settings.fetch_models_sync(None) {
+            // TODO: we could use a concrete error type here because it will
+            // tell us if the error is related to the API key or not. If it is
+            // related to the API key, we should show a message to the user in
+            // the UI to prompt them to set the API key, and then retry this.
+            log::error!("Failed to fetch models from OpenAI because: {}", e);
+            log::error!("Make sure you have an API key set.");
+        }
     }
 }
 

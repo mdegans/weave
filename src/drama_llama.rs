@@ -1,15 +1,14 @@
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 use drama_llama::{Engine, PredictOptions};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub(crate) enum Command {
     Stop,
     Predict { text: String, opts: PredictOptions },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub(crate) enum Response {
     /// Worker is done and can accept new commands.
     Done,

@@ -5,6 +5,9 @@
 #[cfg(feature = "gui")]
 pub mod app;
 
+#[cfg(feature = "openai")]
+pub(crate) mod openai;
+
 #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
 pub(crate) mod drama_llama;
 

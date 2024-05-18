@@ -1,3 +1,5 @@
+use std::num::NonZeroU8;
+
 use serde::{Deserialize, Serialize};
 
 /// A piece of the text. Generally representing a detokenized token.
@@ -34,6 +36,37 @@ pub struct Meta {
     pub pos: egui::Pos2,
     /// Node size.
     pub size: egui::Vec2,
+}
+
+/// An action is needed for a node. All actions imply selection of either the
+/// current node or a child node.
+#[cfg(feature = "gui")]
+#[derive(Default)]
+pub struct Action {
+    /// The node should be deleted.
+    pub delete: bool,
+    /// Generation should continue within this node.
+    pub continue_: bool,
+    /// If new node should be generated, and it's child index.
+    pub generate: Option<usize>,
+}
+
+#[cfg(feature = "gui")]
+impl Action {
+    /// Returns true if any action is needed.
+    pub fn action_needed(&self) -> bool {
+        self.continue_ || self.generate.is_some()
+    }
+}
+
+/// An action is needed at a node path.
+#[cfg(feature = "gui")]
+#[derive(Default)]
+pub struct PathAction {
+    /// A path.
+    pub path: Vec<usize>,
+    /// The action(s) to take on the selected path.
+    pub action: Action,
 }
 
 #[cfg(feature = "gui")]
@@ -224,18 +257,19 @@ impl<T> std::fmt::Display for Node<T> {
 
 #[cfg(feature = "gui")]
 impl Node<Meta> {
-    /// Draw the tree. The active path is highlighted. If the active path is
-    /// changed, it will be returned.
+    /// Draw the tree. The active path is highlighted.
+    /// 
+    /// Returns an action to perform at the path or None if no action is needed.
     // FIXME: we can avoid the active parameter if we move this method to the
-    // Story, where it fits better.
+    // story where it fits better.
     #[cfg(feature = "gui")]
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
         active_path: Option<&[usize]>,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<PathAction> {
         let active_path = active_path.unwrap_or(&[]);
-        let mut ret = None;
+        let mut ret = None; // the default, meaning no action is needed.
 
         // The current path in the tree.
         let mut current_path = Vec::new();
@@ -262,11 +296,38 @@ impl Node<Meta> {
                 }
             }
 
-            // Draw the node.
-            // TODO: Node deletion.
-            let selected = node.draw_one(ui, highlight_node);
-            if selected {
-                ret = Some(current_path.clone());
+            // Draw the node and take any action in response to it's widgets.
+            if let Some(action) = node.draw_one(ui, highlight_node) {
+                if action.delete {
+                    // How to delete a node? We're taking a reference to the
+                    // node so we can't delete it here. We can delete the
+                    // children, but we can't delete the node itself -- at least
+                    // not here. So well forward the action to the caller which
+                    // can delete this node, and with it, all its children.
+                    ret = Some(PathAction {
+                        path: current_path.clone(),
+                        action,
+                    });
+                    // We don't need to draw the children of this node, so we
+                    // continue to the next node.
+                    continue;
+                }
+
+                if let Some(child_index) = action.generate {
+                    // Append the (new) child index to the path and tell the
+                    // caller to generate from the new child.
+                    let mut path = current_path.clone();
+                    path.push(child_index);
+
+                    // The caller has some action to perform at the path.
+                    ret = Some(PathAction { path, action });
+                } else {
+                    // Any other action doesn't require changing the path.
+                    ret = Some(PathAction {
+                        path: current_path.clone(),
+                        action,
+                    });
+                }
             }
 
             for (j, child) in node.children.iter_mut().enumerate() {
@@ -291,7 +352,11 @@ impl Node<Meta> {
 
     /// Draw just the node. Returns true if the node should be active.
     #[cfg(feature = "gui")]
-    pub fn draw_one(&mut self, ui: &mut egui::Ui, highlighted: bool) -> bool {
+    pub fn draw_one(
+        &mut self,
+        ui: &mut egui::Ui,
+        highlighted: bool,
+    ) -> Option<Action> {
         let frame =
             egui::Frame::window(&ui.ctx().style()).fill(if highlighted {
                 egui::Color32::from_rgba_premultiplied(64, 64, 64, 255)
@@ -313,15 +378,66 @@ impl Node<Meta> {
             .auto_sized()
             .frame(frame)
             .show(ui.ctx(), |ui| {
-                let mut activate = false;
+                let mut response = None;
                 ui.horizontal(|ui| {
-                    if ui.button("Add Child").clicked() {
+                    if ui
+                        .button("Add Child")
+                        .on_hover_text_at_pointer(
+                            "Add an empty child node."
+                        )
+                        .clicked() {
                         self.add_child(Node::default());
                     }
-                    if ui.button("Select").clicked() {
-                        activate = true;
+                    if ui
+                        .button("Delete")
+                        .on_hover_text_at_pointer(
+                            "Delete this node and all its children."
+                        )
+                        .clicked() {
+                        // Tell caller to delete this node.
+                        *(&mut response) = Some(Action {
+                            delete: true,
+                            ..Default::default()
+                        });
+                    }
+                    if ui
+                        .button("Select")
+                        .on_hover_text_at_pointer(
+                            "Set this node as the active node. The story will end or continue from this node."
+                        )
+                        .clicked() {
+                        // Any action means selection.
+                        *(&mut response) = Some(Action::default());
+                    }
+                    // FIXME: The terminology here could be improved. These are
+                    // confusing. We should find new names.
+                    if ui
+                        .button("Continue")
+                        .on_hover_text_at_pointer(
+                            "Continue generating the current node.",
+                        )
+                        .clicked()
+                    {
+                        // Tell caller to continue generation on this node.
+                        *(&mut response) = Some(Action {
+                            continue_: true,
+                            ..Default::default()
+                        });
+                    }
+                    if ui
+                        .button("Generate")
+                        .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
+                        .clicked() {
+                        // Tell caller to generate a new node.
+                        *(&mut response) = Some(
+                            Action {
+                                generate: Some(self.add_child(Node::default())),
+                                ..Default::default()
+                            },
+                        );
                     }
                 });
+                
                 if ui.text_edit_multiline(&mut self.text).changed() {
                     // FIXME: We're clearing the pieces here, but we can handle
                     // this better.
@@ -330,18 +446,25 @@ impl Node<Meta> {
                         end: self.text.len(),
                     });
                 }
-                activate
+
+                response
             });
 
+        // If the window has been interacted with, we need to store the new size
+        // and position. We also need to forward any inner activation response
+        // from the closure above to the caller.
         if let Some(response) = response {
+            // Response from the *window*.
             let win = response.response;
 
             self.meta.pos = win.rect.min;
             self.meta.size = win.rect.size();
 
-            response.inner.unwrap_or(false)
+            // Unwrap inner response from the closure and send it to the caller
+            // letting the caller know if any action is needed.
+            response.inner.unwrap_or(None)
         } else {
-            false
+            None
         }
     }
 }

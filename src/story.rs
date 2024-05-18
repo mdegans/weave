@@ -132,15 +132,47 @@ impl Story {
 
     /// Draw UI for the story.
     #[cfg(feature = "gui")]
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui) -> Option<crate::node::Action> {
+        use crate::node::PathAction;
+
         ui.label(self.to_string());
 
         // Draw, and update active path if changed.
-        if let Some(new_path) = self
+        if let Some(PathAction { path, action }) = self
             .root
             .draw(ui, self.active_path.as_ref().map(|v| v.as_slice()))
         {
-            self.active_path = Some(new_path);
+            self.active_path = Some(path);
+            // FIXME: as it turns out all the actions are mutually exclusive,
+            // so we can probably use an enum rather than a struct. The user can
+            // only do one thing at a time, barring the UI hanging or something.
+            if action.delete {
+                // We can handle this here.
+                self.decapitate();
+                return None;
+            } else if action.generate.is_some() | action.continue_ {
+                return Some(action);
+            }
+        }
+
+        None
+    }
+
+    /// Remove the head as well as all its children.
+    pub fn decapitate(&mut self) {
+        if let Some(path) = &mut self.active_path {
+            if path.is_empty() {
+                self.active_path = None;
+            } else {
+                let head_index = path.pop().unwrap();
+                let mut node = &mut self.root;
+                for i in path {
+                    node = &mut node.children[*i];
+                }
+                // This wil now be the parent of the head node. We remove the
+                // child index we just popped.
+                node.children.remove(head_index);
+            }
         }
     }
 
@@ -192,6 +224,50 @@ impl Story {
         };
 
         Ok(())
+    }
+
+    /// Convert the story to OpenAI messages.
+    #[cfg(feature = "openai")]
+    pub fn to_openai_messages(&self) -> Vec<openai_rust::chat::Message> {
+        use openai_rust::chat::Message;
+
+        let messages = if let Some(path) = self.active_path.as_ref() {
+            let mut messages: Vec<Message> = self
+                .root
+                .iter_path_nodes(path)
+                .map(|node| Message {
+                    role: self.id_to_author[node.author_id as usize].clone(),
+                    content: node.to_string(),
+                })
+                .collect();
+
+            // The last message is always the user's message. So we're going to
+            // iterate in reverse and alternate between user and AI.
+            // TODO: We can tag authors as user or assistant and use that
+            // instead, but the messages won't alternate. That isn't strictly
+            // necessary anymore, but it's what we specify in the default system
+            // prompt. We can change that if we want, but it's something to be
+            // done later.
+            let mut is_user = true;
+            for message in messages.iter_mut().rev() {
+                message.role = if is_user {
+                    "user".to_string()
+                } else {
+                    "assistant".to_string()
+                };
+                is_user = !is_user;
+            }
+
+            messages
+        } else {
+            // just the root node
+            vec![Message {
+                role: "user".to_string(),
+                content: self.root.to_string(),
+            }]
+        };
+
+        messages
     }
 }
 

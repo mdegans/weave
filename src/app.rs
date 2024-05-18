@@ -25,9 +25,13 @@ pub struct App {
     toolbar: Toolbar,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
+    #[cfg(feature = "openai")]
+    openai_worker: crate::openai::Worker,
     #[cfg(feature = "generate")]
     generation_in_progress: bool,
 }
+
+// {"default_author":"","prompt_include_authors":false,"prompt_include_title":false,"selected_generative_backend":"OpenAI","backend_options":{"DramaLlama":{"DramaLlama":{"model":"","predict_options":{"n":512,"seed":1337,"stop_sequences":[],"stop_strings":[],"regex_stop_sequences":[],"sample_options":{"modes":[],"repetition":null}}}},"OpenAI":{"OpenAI":{"settings":{"openai_api_key":"hidden in keyring","chat_arguments":{"model":"gpt-3.5-turbo","messages":[{"role":"system","content":"A user and an assistant are collaborating on a story. The user starts by writing a paragraph, then the assistant writes a paragraph, and so on. Both will be credited for the end result.'"},{"role":"user","content":"Hi, GPT! Let's write a story together."},{"role":"assistant","content":"Sure, I'd love to help. How about you start us off? I'll try to match your tone and style."}],"temperature":1.0,"top_p":1.0,"n":null,"stop":null,"max_tokens":1024,"presence_penalty":0.0,"frequency_penalty":0.0,"user":null}}}}}}
 
 impl App {
     pub fn new<'s>(cc: &eframe::CreationContext<'s>) -> Self {
@@ -36,7 +40,16 @@ impl App {
             .map(|storage| {
                 storage
                     .get_string("stories")
-                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .and_then(|s| {
+                        log::debug!("Loading stories: {}", s);
+                        match serde_json::from_str(&s) {
+                            Ok(stories) => Some(stories),
+                            Err(e) => {
+                                log::error!("Failed to load stories: {}", e);
+                                None
+                            }
+                        }
+                    })
                     .unwrap_or_default()
             })
             .unwrap_or_default();
@@ -46,7 +59,16 @@ impl App {
             .map(|storage| {
                 storage
                     .get_string("settings")
-                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .and_then(|s| {
+                        log::debug!("Loading settings: {}", s);
+                        match serde_json::from_str(&s) {
+                            Ok(settings) => Some(settings),
+                            Err(e) => {
+                                log::error!("Failed to load settings: {}", e);
+                                None
+                            }
+                        }
+                    })
                     .unwrap_or_default()
             })
             .unwrap_or_default();
@@ -60,7 +82,11 @@ impl App {
         };
 
         // Handle generation backends
-        new.start_generative_backend();
+        if let Err(e) = new.start_generative_backend() {
+            eprintln!("Failed to start generative backend: {}", e);
+            // This is fine. It can be restarted later once settings are fixed
+            // or the user chooses a different backend.
+        }
 
         new
     }
@@ -82,82 +108,200 @@ impl App {
 
     /// Starts the generative backend if it is not already running.
     #[cfg(feature = "generate")]
-    pub fn start_generative_backend(&mut self) {
+    pub fn start_generative_backend(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         log::info!(
             "Starting generative backend: {}",
             self.settings.selected_generative_backend
         );
-        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-        {
-            if matches!(
-                self.settings.selected_generative_backend,
-                crate::settings::GenerativeBackend::DramaLlama
-            ) {
-                // Apply any model specific settings, for example, context size
-                // which might be shorter than the context length of the
-                // predict options. It won't cause a crash, but it will cause
-                // unexpected behavior. This also makes sure any UI widgets are
-                // clamped to valid values.
-                self.settings.configure_for_current_local_model();
-                let options = self.settings.backend_options();
-                match self.drama_llama_worker.start(options.into()) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!(
-                            "Failed to start `drama_llama` worker: {e}"
-                        );
-                    }
-                }
+        self.settings.setup();
+
+        match self.settings.backend_options() {
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            crate::settings::BackendOptions::DramaLlama { model, .. } => {
+                self.drama_llama_worker.start(model.clone())?;
+            }
+            #[cfg(feature = "openai")]
+            crate::settings::BackendOptions::OpenAI { settings } => {
+                self.openai_worker.start(&settings.openai_api_key);
+            }
+            #[allow(unreachable_patterns)] // because conditional compilation
+            _ => {
+                todo!(
+                    "Generative backend not implemented: {}",
+                    self.settings.selected_generative_backend
+                );
             }
         }
+
+        Ok(())
     }
 
     /// Reset the generative backend to the default. This should initialize or
     /// restart the backend.
     #[cfg(feature = "generate")]
-    pub fn reset_generative_backend(&mut self) {
+    pub fn reset_generative_backend(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.shutdown_generative_backend()?;
+        self.start_generative_backend()?;
+
+        Ok(())
+    }
+
+    /// Start generation (with current settings, at the story head).
+    #[cfg(feature = "generate")]
+    pub fn start_generation(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if self.generation_in_progress {
+            // If this happens, some UI element is not locked properly.
+            panic!("Generation already in progress. This is a bug. Please report it.");
+        }
+
         #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
         {
-            if matches!(
-                self.settings.selected_generative_backend,
-                crate::settings::GenerativeBackend::DramaLlama
-            ) {
-                let options = self.settings.backend_options();
-                match self.drama_llama_worker.restart(options.into()) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // TODO: gui error message (use channel?)
-                        eprintln!("Failed to start drama llama worker: {}", e);
+            let include_authors = self.settings.prompt_include_authors;
+            let include_title = self.settings.prompt_include_title;
+            let backend_options = self.settings.backend_options();
+            let model_name = backend_options.model_name().to_string();
+
+            match backend_options {
+                #[cfg(all(
+                    feature = "drama_llama",
+                    not(target_arch = "wasm32")
+                ))]
+                crate::settings::BackendOptions::DramaLlama {
+                    predict_options,
+                    ..
+                } => {
+                    let predict_options = predict_options.clone();
+
+                    // This has to go here because this and `backend_options`
+                    // are mutably borrowed. We don't use `backend_options`
+                    // after this, so it's fine.
+                    let story = if let Some(story) = self.story_mut() {
+                        story.add_author(model_name);
+                        story
+                    } else {
+                        // This should not happen.
+                        panic!("Generation request without active story. Please report this. This is a bug.");
+                    };
+
+                    // Format the story for generation. In the case of
+                    // LLaMA, it's raw text. We're expecting a foundation
+                    // model, rather than a chat or instruct model. Those
+                    // may work, but are not officially supported by Weave.
+                    let mut text = String::new();
+                    story
+                        .format_full(&mut text, include_authors, include_title)
+                        .unwrap();
+
+                    match self
+                        .drama_llama_worker
+                        // We do want to clone the options because they can be
+                        // changed during generation.
+                        .predict(text, predict_options.clone())
+                    {
+                        Ok(_) => {
+                            // This flag is used to lock the UI while generation
+                            // is in progress.
+                            self.generation_in_progress = true;
+                        }
+                        Err(e) => {
+                            self.generation_in_progress = false;
+                            return Err(e.into());
+                        }
+                    }
+                }
+                #[cfg(feature = "openai")]
+                crate::settings::BackendOptions::OpenAI { settings } => {
+                    let mut options = settings.chat_arguments.clone();
+
+                    let story = if let Some(story) = self.story_mut() {
+                        story.add_author(model_name);
+                        story
+                    } else {
+                        // This should not happen.
+                        panic!("Generation request without active story. Please report this. This is a bug.");
+                    };
+
+                    // append the story to the system prompt and intro messages.
+                    // The last message will always be `user` since we're
+                    // expecting a response from `assistant` and we specified in
+                    // the default system prompt that the turns will alternate.
+                    // TODO: Keep track of authors of each node and only allow
+                    // generation from a user's node... maybe.
+                    options.messages.extend(story.to_openai_messages());
+
+                    match self.openai_worker.predict(options) {
+                        Ok(_) => {
+                            self.generation_in_progress = true;
+                        }
+                        Err(e) => {
+                            if e.is_disconnected() {
+                                // This can happen for a variety of reasons,
+                                // like the connection failing or some other
+                                // error like a bad API key. No matter what, we
+                                // should unlock the UI so the worker can be
+                                // restarted.
+                                self.generation_in_progress = false;
+                            } else {
+                                // Channel is full. This is bad.
+                                panic!("OpenAI worker command channel is full. This is a bug. Please report this: {}", e)
+                            }
+                            return Err(e.into());
+                        }
                     }
                 }
             }
+
+            Ok(())
         }
     }
 
     /// Stop generation.
     #[cfg(feature = "generate")]
-    pub fn stop_generation(&mut self) {
-        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-        {
-            if let Err(e) = self.drama_llama_worker.stop() {
-                // Most likely worker is dead
-                eprintln!(
-                    "Could not stop `drama_llama` cleanly because: {e:#?}",
-                );
+    pub fn stop_generation(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self.settings.selected_generative_backend {
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            crate::settings::GenerativeBackend::DramaLlama => {
+                self.drama_llama_worker.stop()?;
+            }
+            #[cfg(feature = "openai")]
+            crate::settings::GenerativeBackend::OpenAI => {
+                self.openai_worker.try_stop()?;
             }
         }
+
+        Ok(())
     }
 
-    /// Shutdown the generative backend. This is a no-op for most backends.
+    /// Stop generation. Shutdown the generative backend. This may block until
+    /// the next piece is yielded.
     #[cfg(feature = "generate")]
-    pub fn shutdown_generative_backend(&mut self) {
-        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-        {
-            if let Err(e) = self.drama_llama_worker.shutdown() {
-                // Most likely worker is dead
-                eprintln!("`drama_llama` worker did not shut down cleanly because: {e:#?}");
+    pub fn shutdown_generative_backend(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self.settings.selected_generative_backend {
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            crate::settings::GenerativeBackend::DramaLlama => {
+                if self.drama_llama_worker.shutdown().is_err() {
+                    return Err("`drama_llama` worker thread did not shut down cleanly.".into());
+                }
             }
+            #[cfg(feature = "openai")]
+            crate::settings::GenerativeBackend::OpenAI => {
+                self.openai_worker.shutdown()?;
+            }
+            #[allow(unreachable_patterns)] // because conditional compilation``
+            _ => {}
         }
+
+        Ok(())
     }
 
     /// Draw the toolbar.
@@ -262,58 +406,6 @@ impl App {
                 self.active_story = None;
             }
         }
-
-        #[cfg(feature = "generate")]
-        {
-            // FIXME: The generate button should go on nodes, not here.
-            if !self.stories.is_empty() && ui.button("Generate").clicked() {
-                self.start_generative_backend();
-                self.generation_in_progress = true;
-                match self.settings.selected_generative_backend {
-                    #[cfg(all(
-                        feature = "drama_llama",
-                        not(target_arch = "wasm32")
-                    ))]
-                    crate::settings::GenerativeBackend::DramaLlama => {
-                        let options = self.settings.backend_options();
-                        let predict_options = options.into();
-                        let model: String = options.model_name().to_string();
-                        let include_authors =
-                            self.settings.prompt_include_authors;
-                        let include_title = self.settings.prompt_include_title;
-
-                        if let Some(story) = self.story_mut() {
-                            story.add_author(model.clone());
-                            let empty: Vec<String> = Vec::new();
-                            story.add_paragraph(model, &empty);
-                            let mut text = String::new();
-                            story
-                                .format_full(
-                                    &mut text,
-                                    include_authors,
-                                    include_title,
-                                )
-                                .unwrap();
-                            log::debug!("Prompt: ```{text}```");
-                            match self
-                                .drama_llama_worker
-                                .predict(text, predict_options)
-                            {
-                                Ok(_) => {
-                                    // Text submitted to worker.
-                                }
-                                Err(e) => {
-                                    self.generation_in_progress = false;
-                                    eprint!(
-                                        "Failed to send command to worker: {e}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Draw the central panel.
@@ -322,6 +414,9 @@ impl App {
         ctx: &eframe::egui::Context,
         _frame: &mut eframe::Frame,
     ) {
+        // Because mutable references, we need to copy these flags.
+        let mut start_generation = false;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut new_pieces = Vec::new();
 
@@ -344,7 +439,15 @@ impl App {
             // with it.
             // In the meantime, the windows are, at least, collapsible.
             if let Some(story) = self.story_mut() {
-                story.draw(ui);
+                // TODO: the response from story.draw could be more succinct. We
+                // only realy know if we need to start generation (for now).
+                if let Some(action) = story.draw(ui) {
+                    if action.continue_ | action.generate.is_some() {
+                        // The path has already been changed. We need only
+                        // start generation.
+                        start_generation = true;
+                    }
+                }
                 story.extend_paragraph(new_pieces);
             } else {
                 if !new_pieces.is_empty() {
@@ -358,6 +461,10 @@ impl App {
                 ui.label("Create a new story or select an existing one.");
             }
         });
+
+        if start_generation {
+            self.start_generation();
+        }
     }
 
     /// Update any generation that is in progress.
@@ -369,61 +476,103 @@ impl App {
             return;
         }
 
-        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-        if matches!(
-            self.settings.selected_generative_backend,
-            GenerativeBackend::DramaLlama
-        ) {
-            // Handle responses from the drama llama worker.
-            match self.drama_llama_worker.try_recv() {
-                Some(Err(e)) => match e {
-                    std::sync::mpsc::TryRecvError::Empty => {
-                        // The channel is empty. This is normal.
-                    }
-                    std::sync::mpsc::TryRecvError::Disconnected => {
-                        eprintln!(
+        match self.settings.selected_generative_backend {
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            GenerativeBackend::DramaLlama => {
+                // Handle responses from the drama llama worker.
+                match self.drama_llama_worker.try_recv() {
+                    Some(Err(e)) => match e {
+                        std::sync::mpsc::TryRecvError::Empty => {
+                            // The channel is empty. This is normal.
+                        }
+                        std::sync::mpsc::TryRecvError::Disconnected => {
+                            eprintln!(
                             "`drama_llama` worker disconnected unexpectedly."
                         );
-                        // This should not happen, but it can if the worker
-                        // panics. This indicates a bug in `drama_llama`.
-                        if let Err(err) = self.drama_llama_worker.shutdown() {
-                            eprintln!("Worker thread died because: {:?}", err);
+                            // This should not happen, but it can if the worker
+                            // panics. This indicates a bug in `drama_llama`.
+                            if let Err(err) = self.drama_llama_worker.shutdown()
+                            {
+                                eprintln!(
+                                    "Worker thread died because: {:?}",
+                                    err
+                                );
+                            }
+                            self.generation_in_progress = false;
                         }
+                    },
+                    Some(Ok(response)) => match response {
+                        // The worker has generated a new piece of text, we add
+                        // it to the story.
+                        crate::drama_llama::Response::Predicted { piece } => {
+                            new_pieces.push(piece);
+                        }
+                        crate::drama_llama::Response::Done => {
+                            // Trim whitespace from the end of the story. The
+                            // Predictor currently keeps any end sequence, which
+                            // might be whitespace.
+                            // TODO: add a setting to control this behavior in
+                            // `drama_llama`
+                            if let Some(story) = self.story_mut() {
+                                story.head_mut().trim_end_whitespace();
+                            }
+                            // We can unlock the UI now.
+                            self.generation_in_progress = false;
+                        }
+                        crate::drama_llama::Response::Busy { command } => {
+                            // This might happen because of data races, but really
+                            // shouldn't.
+                            // TODO: gui error message
+                            log::error!(
+                                "Unexpected command sent to worker. Report this please: {:?}",
+                                command
+                            )
+                        }
+                    },
+                    None => {
+                        // Worker is dead.
                         self.generation_in_progress = false;
                     }
-                },
+                }
+            }
+            #[cfg(feature = "openai")]
+            GenerativeBackend::OpenAI => match self.openai_worker.try_recv() {
+                Some(Err(e)) => {
+                    // In this case the worker isn't dead. This is the normal
+                    // case when the channel is empty, but still connected.
+                }
                 Some(Ok(response)) => match response {
-                    // The worker has generated a new piece of text, we add
-                    // it to the story.
-                    crate::drama_llama::Response::Predicted { piece } => {
+                    crate::openai::Response::Predicted { piece } => {
                         new_pieces.push(piece);
                     }
-                    crate::drama_llama::Response::Done => {
-                        // Trim whitespace from the end of the story. The
-                        // Predictor currently keeps any end sequence, which
-                        // might be whitespace.
-                        // TODO: add a setting to control this behavior in
-                        // `drama_llama`
+                    crate::openai::Response::Done => {
                         if let Some(story) = self.story_mut() {
                             story.head_mut().trim_end_whitespace();
                         }
-                        // We can unlock the UI now.
                         self.generation_in_progress = false;
                     }
-                    crate::drama_llama::Response::Busy { command } => {
-                        // This might happen because of data races, but really
-                        // shouldn't.
-                        // TODO: gui error message
+                    crate::openai::Response::Busy { command } => {
                         log::error!(
-                            "Unexpected command sent to worker. Report this please: {:?}",
-                            command
-                        )
+                                "Unexpected command sent to worker. Report this please: {:?}",
+                                command
+                            )
+                    }
+                    crate::openai::Response::Models { models } => {
+                        if let crate::settings::BackendOptions::OpenAI {
+                            settings,
+                        } = self.settings.backend_options()
+                        {
+                            settings.models = models;
+                        }
                     }
                 },
                 None => {
                     // Worker is dead.
+                    self.generation_in_progress = false;
                 }
-            }
+            },
+            #[allow(unreachable_patterns)] // because conditional compilation
+            _ => {}
         }
     }
 }
@@ -440,15 +589,15 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string(
-            "stories",
-            serde_json::to_string(&self.stories).unwrap(),
-        );
+        let serialized_stories = serde_json::to_string(&self.stories).unwrap();
+        let serialized_settings =
+            serde_json::to_string(&self.settings).unwrap();
 
-        storage.set_string(
-            "settings",
-            serde_json::to_string(&self.settings).unwrap(),
-        );
+        log::debug!("Saving stories: {}", serialized_stories);
+        log::debug!("Saving settings: {}", serialized_settings);
+
+        storage.set_string("stories", serialized_stories);
+        storage.set_string("settings", serialized_settings);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
