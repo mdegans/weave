@@ -1,6 +1,3 @@
-use std::panic;
-
-use futures::SinkExt;
 use serde::{Deserialize, Serialize};
 // TODO: This crate does not support third-party endpoints. We should fix this
 // and send a PR or use another crate. It would be nice to support local models
@@ -430,6 +427,8 @@ pub(crate) enum Command {
     /// the channel will shut down the worker.
     Stop,
     /// Request models from the OpenAI API. The api key is required.
+    // TODO: Send this when the button is clicked in settings instead of calling
+    // the sync version which briefly blocks the UI.
     FetchModels,
     /// Worker should start streaming predictions using the provided options.
     Predict { opts: ChatArguments },
@@ -463,6 +462,11 @@ pub(crate) enum Response {
     Predicted { piece: String },
 }
 
+/// Worker thread for generating responses using the OpenAI API. This runs an
+/// async runtime in a separate thread and communicates with the main thread
+/// using channels. We have to do this because the main thread is synchronous
+/// and the `openai_rust` crate is async. `egui` does not support async directly
+/// but this is one of the suggested ways to handle it.
 #[derive(Default)]
 pub(crate) struct Worker {
     // We do need to run the executor in a separate thread. We can't run it in
@@ -614,17 +618,17 @@ impl Worker {
                                         }
                                     }
                                     Some("stop") => {
-                                        to_main.send(Response::Done).await;
+                                        to_main.send(Response::Done).await.ok();
                                         break 'stream_loop;
                                     }
                                     Some("max_tokens") => {
-                                        to_main.send(Response::Done).await;
+                                        to_main.send(Response::Done).await.ok();
                                         break 'stream_loop;
                                     }
 
                                     Some(reason) => {
                                         log::error!("Unknown finish reason: {reason:?}");
-                                        to_main.send(Response::Done).await;
+                                        to_main.send(Response::Done).await.ok();
                                         break 'stream_loop;
                                     }
                                 }
@@ -678,16 +682,6 @@ impl Worker {
         Ok(())
     }
 
-    /// Same as try_stop, but awaits the result.
-    pub async fn stop(&mut self) -> Result<(), futures::channel::mpsc::SendError> {
-        log::debug!("Waiting for worker to cancel current generation.");
-        if let Some(to_worker) = self.to_worker.as_mut() {
-            to_worker.send(Command::Stop).await?;
-        }
-
-        Ok(())
-    }
-
     /// Shutdown the worker thread. If the worker is not alive, this is a no-op.
     /// 
     /// This will block until the worker is done (the next piece is yielded) if
@@ -715,19 +709,13 @@ impl Worker {
             },
         }
         log::debug!("Telling worker to shut down.");
-        if let Some(mut to_worker) = self.to_worker.take() {
-            // I'm unsure of the order of these. I think we should close first
-            // and then flush. I'm not sure if we need to do both.
-            // TODO: test this.
-            to_worker.close();
-            to_worker.flush();
-            // worker dropped, the worker thread should terminate next iteration
+        if let Some(_to_worker) = self.to_worker.take() {
+            // Send channel dropped, causing worker to shut down.
         }
 
         if let Some(_) = self.from_worker.take() {
-            // drop receiver. This will cause an error with any sends in
-            // progress which will terminate the worker thread if it's still
-            // alive.
+            // Reciever dropped. This will also cause the worker to terminate
+            // depending on which happens first.
         }
 
         // finally, we wait for the worker thread to finish.

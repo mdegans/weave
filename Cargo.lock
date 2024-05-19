@@ -4996,6 +4996,7 @@ dependencies = [
  "openai-rust",
  "serde",
  "serde_json",
+ "static_assertions",
  "tokio",
  "uuid",
 ]

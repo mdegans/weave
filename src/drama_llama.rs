@@ -29,12 +29,6 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    /// Restart the worker thread. Same as shutdown followed by start.
-    pub fn restart(&mut self, model: PathBuf) -> Result<(), std::io::Error> {
-        self.shutdown().ok();
-        self.start(model)
-    }
-
     /// Start the worker thread. If the worker is already alive, this is a
     /// no-op. Use `restart` to restart the worker or change the model.
     ///
@@ -120,6 +114,9 @@ impl Worker {
                     // We check every token for a stop or disconnect signal
                     // since it is the tightest loop we have.
                     match from_main.try_recv() {
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            // No new commands, nothing to do.
+                        }
                         Ok(Command::Stop) => {
                             log::debug!("Generation cancelled.");
                             break;
@@ -129,9 +126,15 @@ impl Worker {
                             // cue to exit.
                             return;
                         }
-                        _ => {}
+                        Ok(command) => {
+                            // We can't handle this command right now. We'll
+                            // send a busy Response and the main thread can
+                            // decide what to do.
+                            to_main.send(Response::Busy { command }).ok();
+                        }
                     }
 
+                    // Send the predicted piece back to the main thread.
                     to_main.send(Response::Predicted { piece }).ok();
                 }
 

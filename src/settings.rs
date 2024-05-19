@@ -438,9 +438,8 @@ impl Settings {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             BackendOptions::DramaLlama {
                 model,
-                predict_options,
-                file_dialog,
                 max_context_size,
+                ..
             } => {
                 Self::drama_llama_helper(model, max_context_size, path);
             }
@@ -462,9 +461,8 @@ impl Settings {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             BackendOptions::DramaLlama {
                 model,
-                predict_options,
-                file_dialog,
                 max_context_size,
+                ..
             } => {
                 let new = model.clone();
                 if model.exists() {

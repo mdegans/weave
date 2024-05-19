@@ -463,7 +463,9 @@ impl App {
         });
 
         if start_generation {
-            self.start_generation();
+            if let Err(e) = self.start_generation() {
+                log::error!("Failed to start generation: {}", e);
+            }
         }
     }
 
@@ -537,9 +539,11 @@ impl App {
             }
             #[cfg(feature = "openai")]
             GenerativeBackend::OpenAI => match self.openai_worker.try_recv() {
-                Some(Err(e)) => {
+                Some(Err(_)) => {
                     // In this case the worker isn't dead. This is the normal
-                    // case when the channel is empty, but still connected.
+                    // case when the channel is empty, but still connected. The
+                    // api for this channel is not the same as for
+                    // std::sync::mpsc
                 }
                 Some(Ok(response)) => match response {
                     crate::openai::Response::Predicted { piece } => {
@@ -601,6 +605,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.shutdown_generative_backend();
+        if let Err(e) = self.shutdown_generative_backend() {
+            eprintln!("Failed to cleanly shut down generative backend: {}", e);
+        }
     }
 }

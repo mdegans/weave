@@ -1,5 +1,3 @@
-use std::num::NonZeroU8;
-
 use serde::{Deserialize, Serialize};
 
 /// A piece of the text. Generally representing a detokenized token.
