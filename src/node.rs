@@ -8,6 +8,8 @@ pub struct Piece {
     pub end: usize,
 }
 
+static_assertions::assert_impl_all!(Piece: Send, Sync);
+
 /// Node data. Contains a paragraph within a story tree.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Node<T> {
@@ -24,6 +26,8 @@ pub struct Node<T> {
     pub meta: T,
 }
 
+static_assertions::assert_impl_all!(Node<Meta>: Send, Sync);
+
 /// Node metadata.
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg(feature = "gui")]
@@ -34,37 +38,6 @@ pub struct Meta {
     pub pos: egui::Pos2,
     /// Node size.
     pub size: egui::Vec2,
-}
-
-/// An action is needed for a node. All actions imply selection of either the
-/// current node or a child node.
-#[cfg(feature = "gui")]
-#[derive(Default)]
-pub struct Action {
-    /// The node should be deleted.
-    pub delete: bool,
-    /// Generation should continue within this node.
-    pub continue_: bool,
-    /// If new node should be generated, and it's child index.
-    pub generate: Option<usize>,
-}
-
-#[cfg(feature = "gui")]
-impl Action {
-    /// Returns true if any action is needed.
-    pub fn action_needed(&self) -> bool {
-        self.continue_ || self.generate.is_some()
-    }
-}
-
-/// An action is needed at a node path.
-#[cfg(feature = "gui")]
-#[derive(Default)]
-pub struct PathAction {
-    /// A path.
-    pub path: Vec<usize>,
-    /// The action(s) to take on the selected path.
-    pub action: Action,
 }
 
 #[cfg(feature = "gui")]
@@ -86,6 +59,43 @@ impl Default for Meta {
         }
     }
 }
+
+/// An action is needed for a node. All actions imply selection of either the
+/// current node or a child node.
+#[cfg(feature = "gui")]
+#[derive(Default)]
+pub struct Action {
+    /// The node should be deleted.
+    pub delete: bool,
+    /// Generation should continue within this node.
+    pub continue_: bool,
+    /// If new node should be generated, and it's child index.
+    pub generate: Option<usize>,
+}
+
+#[cfg(feature = "gui")]
+static_assertions::assert_impl_all!(Action: Send, Sync);
+
+#[cfg(feature = "gui")]
+impl Action {
+    /// Returns true if any action is needed.
+    pub fn action_needed(&self) -> bool {
+        self.continue_ || self.generate.is_some()
+    }
+}
+
+/// An action is needed at a node path.
+#[cfg(feature = "gui")]
+#[derive(Default)]
+pub struct PathAction {
+    /// A path.
+    pub path: Vec<usize>,
+    /// The action(s) to take on the selected path.
+    pub action: Action,
+}
+
+#[cfg(feature = "gui")]
+static_assertions::assert_impl_all!(PathAction: Send, Sync);
 
 /// Dummy node metadata.
 #[derive(Default, Serialize, Deserialize)]
@@ -253,18 +263,17 @@ impl<T> std::fmt::Display for Node<T> {
     }
 }
 
-#[cfg(feature = "gui")]
 impl Node<Meta> {
-    /// Draw the tree. The active path is highlighted.
+    /// Draw the tree. The active path is highlighted. If `lock_topology` is
+    /// true, the user cannot add or remove nodes.
     /// 
     /// Returns an action to perform at the path or None if no action is needed.
-    // FIXME: we can avoid the active parameter if we move this method to the
-    // story where it fits better.
     #[cfg(feature = "gui")]
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
         active_path: Option<&[usize]>,
+        lock_topology: bool,
     ) -> Option<PathAction> {
         let active_path = active_path.unwrap_or(&[]);
         let mut ret = None; // the default, meaning no action is needed.
@@ -295,7 +304,7 @@ impl Node<Meta> {
             }
 
             // Draw the node and take any action in response to it's widgets.
-            if let Some(action) = node.draw_one(ui, highlight_node) {
+            if let Some(action) = node.draw_one(ui, highlight_node, lock_topology) {
                 if action.delete {
                     // How to delete a node? We're taking a reference to the
                     // node so we can't delete it here. We can delete the
@@ -354,13 +363,10 @@ impl Node<Meta> {
         &mut self,
         ui: &mut egui::Ui,
         highlighted: bool,
+        lock_topology: bool,
     ) -> Option<Action> {
-        let frame =
-            egui::Frame::window(&ui.ctx().style()).fill(if highlighted {
-                egui::Color32::from_rgba_premultiplied(64, 64, 64, 255)
-            } else {
-                egui::Color32::from_rgba_premultiplied(64, 64, 64, 128)
-            });
+        let frame = egui::Frame::window(&ui.ctx().style())
+            .fill(egui::Color32::from_gray(64));
 
         let title = self
             .text
@@ -376,66 +382,77 @@ impl Node<Meta> {
             .auto_sized()
             .frame(frame)
             .show(ui.ctx(), |ui| {
+
+                if !highlighted {
+                    ui.set_opacity(0.5);
+                }
+
+
                 let mut response = None;
-                ui.horizontal(|ui| {
-                    if ui
-                        .button("Add Child")
-                        .on_hover_text_at_pointer(
-                            "Add an empty child node."
-                        )
-                        .clicked() {
-                        self.add_child(Node::default());
-                    }
-                    if ui
-                        .button("Delete")
-                        .on_hover_text_at_pointer(
-                            "Delete this node and all its children."
-                        )
-                        .clicked() {
-                        // Tell caller to delete this node.
-                        *(&mut response) = Some(Action {
-                            delete: true,
-                            ..Default::default()
-                        });
-                    }
-                    if ui
-                        .button("Select")
-                        .on_hover_text_at_pointer(
-                            "Set this node as the active node. The story will end or continue from this node."
-                        )
-                        .clicked() {
-                        // Any action means selection.
-                        *(&mut response) = Some(Action::default());
-                    }
-                    // FIXME: The terminology here could be improved. These are
-                    // confusing. We should find new names.
-                    if ui
-                        .button("Continue")
-                        .on_hover_text_at_pointer(
-                            "Continue generating the current node.",
-                        )
-                        .clicked()
-                    {
-                        // Tell caller to continue generation on this node.
-                        *(&mut response) = Some(Action {
-                            continue_: true,
-                            ..Default::default()
-                        });
-                    }
-                    if ui
-                        .button("Generate")
-                        .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
-                        .clicked() {
-                        // Tell caller to generate a new node.
-                        *(&mut response) = Some(
-                            Action {
-                                generate: Some(self.add_child(Node::default())),
+                if !lock_topology {                
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Add Child")
+                            .on_hover_text_at_pointer(
+                                "Add an empty child node."
+                            )
+                            .clicked() {
+                            self.add_child(Node::default());
+                        }
+                        if ui
+                            .button("Delete")
+                            .on_hover_text_at_pointer(
+                                "Delete this node and all its children."
+                            )
+                            .clicked() {
+                            // Tell caller to delete this node.
+                            *(&mut response) = Some(Action {
+                                delete: true,
                                 ..Default::default()
-                            },
-                        );
-                    }
-                });
+                            });
+                        }
+                        if ui
+                            .button("Select")
+                            .on_hover_text_at_pointer(
+                                "Set this node as the active node. The story will end or continue from this node."
+                            )
+                            .clicked() {
+                            // Any action means selection.
+                            *(&mut response) = Some(Action::default());
+                        }
+                        // FIXME: The terminology here could be improved. These are
+                        // confusing. We should find new names.
+                        if ui
+                            .button("Continue")
+                            .on_hover_text_at_pointer(
+                                "Continue generating the current node.",
+                            )
+                            .clicked()
+                        {
+                            // Tell caller to continue generation on this node.
+                            *(&mut response) = Some(Action {
+                                continue_: true,
+                                ..Default::default()
+                            });
+                        }
+                        if ui
+                            .button("Generate")
+                            .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
+                            .clicked() {
+                            // Tell caller to generate a new node.
+                            *(&mut response) = Some(
+                                Action {
+                                    generate: Some(self.add_child(Node::default())),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    });
+                }
                 
+                // We can still allow editing the text during generation since
+                // the pieces are still appended to the end. There is no
+                // ownership issue because of the immediate mode GUI.
                 if ui.text_edit_multiline(&mut self.text).changed() {
                     // FIXME: We're clearing the pieces here, but we can handle
                     // this better.
@@ -475,7 +492,7 @@ fn draw_line(ui: &mut egui::Ui, src: Meta, dst: Meta, highlighted: bool) {
     } else {
         egui::Color32::from_rgba_premultiplied(128, 128, 128, 255)
     };
-    let stroke = egui::Stroke::new(1.0, color);
+    let stroke = egui::Stroke::new(if highlighted { 2.0 } else { 1.0 }, color);
     let src = src.pos + src.size / 2.0;
     let dst = dst.pos + dst.size / 2.0;
     ui.painter().line_segment([src, dst], stroke);

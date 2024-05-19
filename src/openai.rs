@@ -381,8 +381,8 @@ impl Settings {
                 // on startup with futures::executor::block_on.
 
                 // FIXME: This is blocking. We do have a way of sending a
-                // command to the worker to fetch the models, but it's on the
-                // parent struct, so we'll need to return some kind of command
+                // request to the worker to fetch the models, but it's on the
+                // parent struct, so we'll need to return some kind of request
                 // from here to the parent to tell it to fetch the models. Then
                 // when the models are ready, they're sent back to the main
                 // thread and all is well with no blocking. But this is fine
@@ -422,7 +422,7 @@ impl Settings {
 // We're using the same interface as `drama_llama`. Eventually we can define a
 // trait if all the stars align, but not so soon.
 #[derive(Debug)]
-pub(crate) enum Command {
+pub(crate) enum Request {
     /// Worker should cancel any current generation, but not shut down. Dropping
     /// the channel will shut down the worker.
     Stop,
@@ -443,7 +443,7 @@ pub(crate) enum Response {
         /// Available models. The UI should probably display these.
         models: Vec<openai_rust::models::Model>,
     },
-    /// Worker is busy generating a response. Attached is the command that
+    /// Worker is busy generating a response. Attached is the request that
     /// would have been acted upon.
     // although with OpenAI's streaming API and our design, there is no reason
     // we can't have concurrent generations going eventually, however there are
@@ -452,7 +452,7 @@ pub(crate) enum Response {
     // prevent some cases like deleting a head while it's generating, however
     // starting new generations should be fine.
     // TODO: Handle the above carefully in the App. Try to break it.
-    Busy { command: Command },
+    Busy { request: Request },
     /// The worker has predicted a piece of text along with OpenAI specific
     /// metadata
     // (since we're actually paying for it, might as well use it).
@@ -472,7 +472,7 @@ pub(crate) struct Worker {
     // We do need to run the executor in a separate thread. We can't run it in
     // the main thread because it's blocking.
     handle: Option<std::thread::JoinHandle<()>>,
-    to_worker: Option<futures::channel::mpsc::Sender<Command>>,
+    to_worker: Option<futures::channel::mpsc::Sender<Request>>,
     from_worker: Option<futures::channel::mpsc::Receiver<Response>>,
 }
 
@@ -514,20 +514,20 @@ impl Worker {
 
             rt.block_on(async move {
                 // The logic here is syncronous. We do want to wait for one
-                // command to finish before starting the next one. Otherwise we
+                // request to finish before starting the next one. Otherwise we
                 // could use `for_each_concurrent` or something, but we would
-                // have to associate the commands with the appropriate nodes.
+                // have to associate the requests with the appropriate nodes.
                 // This can wait until some changes in `App` and `Story` are
                 // made so we can support multiple "heads" and lock the UI
                 // appropriately.
-                while let Some(command) = from_main.next().await {
-                    let send_response = match command {
-                        Command::Stop => {
+                while let Some(request) = from_main.next().await {
+                    let send_response = match request {
+                        Request::Stop => {
                             // We are already stopped. We just tell main we're
                             // done.
                             to_main.send(Response::Done).await
                         }
-                        Command::FetchModels => {
+                        Request::FetchModels => {
                             let models = match client.list_models().await {
                                 Ok(models) => models,
                                 Err(e) => {
@@ -546,7 +546,7 @@ impl Worker {
                                 .send(Response::Models { models })
                                 .await
                         }
-                        Command::Predict { opts } => {
+                        Request::Predict { opts } => {
                             let args: openai_rust::chat::ChatArguments =
                                 opts.into();
                             let mut stream =
@@ -559,13 +559,13 @@ impl Worker {
                                 // like with `drama_llama`, at this point we're
                                 // going to check for stop signals. We could
                                 // also `select!` on the channel and the stream
-                                // to handle other commands concurrently, but
+                                // to handle other requests concurrently, but
                                 // I'm unsure about cancel safety at the moment.
                                 // The docs on this in the openai crate are not
                                 // specific on this. TODO: read source
                                 while let Ok(cmd) = from_main.try_next() {
                                     match cmd {
-                                        Some(Command::Stop) => {
+                                        Some(Request::Stop) => {
                                             log::debug!("Generation cancelled.");
                                             // Break the outer loop which will
                                             // drop the stream and cancel the
@@ -584,12 +584,12 @@ impl Worker {
                                         }
                                         Some(cmd) => {
                                             // We don't care about other
-                                            // commands while generating. We
+                                            // requests while generating. We
                                             // *could* handle them concurrently,
                                             // but not right now. For the moment
                                             // we will send them back as busy.
                                             to_main
-                                                .send(Response::Busy { command: cmd })
+                                                .send(Response::Busy { request: cmd })
                                                 .await.ok();
                                         }
                                     }
@@ -639,7 +639,7 @@ impl Worker {
                     match send_response {
                         Ok(_) => {
                             // Response sent successfully. We can now accept the
-                            // next command.
+                            // next request.
                         }
                         Err(e) => {
                             if e.is_disconnected() {
@@ -671,12 +671,12 @@ impl Worker {
     /// an error. In this case await `stop` instead or terminate the process,
     /// since it shouldn't happen. If the channel is full the UI is flooding the
     /// channel with requests which shouldn't happen since the worker checks for
-    /// commands at regular intervals, sending them back as `Busy` if it's
+    /// requests at regular intervals, sending them back as `Busy` if it's
     /// currently generating.
-    pub fn try_stop(&mut self) -> Result<(), futures::channel::mpsc::TrySendError<Command>> {
+    pub fn try_stop(&mut self) -> Result<(), futures::channel::mpsc::TrySendError<Request>> {
         log::debug!("Telling worker to cancel current generation.");
         if let Some(to_worker) = self.to_worker.as_mut() {
-            to_worker.try_send(Command::Stop)?;
+            to_worker.try_send(Request::Stop)?;
         }
 
         Ok(())
@@ -692,10 +692,10 @@ impl Worker {
     /// receiver is full. This should not happen. If it does, the UI is sending
     /// too many requests. This is a bug in the UI code and/or the worker since
     /// this shouldn't be possible.
-    pub fn shutdown(&mut self) -> Result<(), futures::channel::mpsc::TrySendError<Command>> {
+    pub fn shutdown(&mut self) -> Result<(), futures::channel::mpsc::TrySendError<Request>> {
         match self.try_stop() {
             Ok(_) => {
-                // we sent the stop command. Now we can drop the channel to
+                // we sent the stop request. Now we can drop the channel to
                 // trigger the worker to shut down.
             },
             Err(e) => {
@@ -736,7 +736,7 @@ impl Worker {
     /// 
     /// # Panics
     /// * If the worker is not alive.
-    pub fn predict(&mut self, opts: ChatArguments) -> Result<(), futures::channel::mpsc::TrySendError<Command>> {
+    pub fn predict(&mut self, opts: ChatArguments) -> Result<(), futures::channel::mpsc::TrySendError<Request>> {
         if !self.is_alive() {
             // So the futures API does not allow us to construct an error since
             // the fields are private and the only constructors are private.
@@ -746,7 +746,7 @@ impl Worker {
         }
 
         if let Some(to_worker) = self.to_worker.as_mut() {
-            to_worker.try_send(Command::Predict { opts })?;
+            to_worker.try_send(Request::Predict { opts })?;
         }
 
         Ok(())

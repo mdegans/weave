@@ -1,23 +1,34 @@
+//! Weave is primarily a binary crate, but has reusable components that can be
+//! used in other story-writing projects.
+
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), deny(warnings))] // Forbid warnings in release builds
 #![warn(clippy::all, rust_2018_idioms)]
 
+/// [`egui`] [`App`]` for the Weave application.
 #[cfg(feature = "gui")]
 pub mod app;
 
+/// OpenAI generative [`Worker`]. [`Request`]s are sent to the worker and
+/// [`Response`]s are received. This can be used to run tasks in the background
+/// and are not tied to any specific frontend.
 #[cfg(feature = "openai")]
 pub(crate) mod openai;
 
+/// [`drama_llama`] generative [`Worker`]. [`Request`]s are sent to the worker
+/// and [`Response`]s are received. This can be used to run tasks in the
+/// background and are not tied to any specific frontend.
 #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
 pub(crate) mod drama_llama;
 
+/// Crate-wide constants.
 pub mod consts;
+/// Contains [`Node`] and associated types such as [`Meta`].
 pub mod node;
-pub mod settings;
+/// Contains a branching [`Story`] (a tree of [`Node`]s).
 pub mod story;
 
-// ----------------------------------------------------------------------------
-// When compiling for web:
+// wasm entrypoints:
 
 #[cfg(feature = "gui")]
 #[cfg(target_arch = "wasm32")]

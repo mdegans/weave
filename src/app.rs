@@ -1,11 +1,8 @@
-use crate::{settings::Settings, story::Story};
+mod settings;
 
-#[derive(Default)]
-pub struct Toolbar {
-    pub title_buf: String,
-}
+use {self::settings::Settings, crate::story::Story};
 
-#[derive(Default, derive_more::Display)]
+#[derive(Default, PartialEq, derive_more::Display)]
 pub enum SidebarPage {
     #[default]
     Stories,
@@ -14,6 +11,8 @@ pub enum SidebarPage {
 
 #[derive(Default)]
 pub struct Sidebar {
+    // New story title buffer
+    title_buf: String,
     page: SidebarPage,
 }
 #[derive(Default)]
@@ -22,7 +21,6 @@ pub struct App {
     stories: Vec<Story>,
     settings: Settings,
     sidebar: Sidebar,
-    toolbar: Toolbar,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
     #[cfg(feature = "openai")]
@@ -119,19 +117,12 @@ impl App {
 
         match self.settings.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-            crate::settings::BackendOptions::DramaLlama { model, .. } => {
+            settings::BackendOptions::DramaLlama { model, .. } => {
                 self.drama_llama_worker.start(model.clone())?;
             }
             #[cfg(feature = "openai")]
-            crate::settings::BackendOptions::OpenAI { settings } => {
+            settings::BackendOptions::OpenAI { settings } => {
                 self.openai_worker.start(&settings.openai_api_key);
-            }
-            #[allow(unreachable_patterns)] // because conditional compilation
-            _ => {
-                todo!(
-                    "Generative backend not implemented: {}",
-                    self.settings.selected_generative_backend
-                );
             }
         }
 
@@ -151,6 +142,9 @@ impl App {
     }
 
     /// Start generation (with current settings, at the story head).
+    // TODO: Move backend code to the backend modules. This function is too
+    // long. Each backend does more or less the same thing. See if we can make
+    // a trait for this.
     #[cfg(feature = "generate")]
     pub fn start_generation(
         &mut self,
@@ -172,7 +166,7 @@ impl App {
                     feature = "drama_llama",
                     not(target_arch = "wasm32")
                 ))]
-                crate::settings::BackendOptions::DramaLlama {
+                settings::BackendOptions::DramaLlama {
                     predict_options,
                     ..
                 } => {
@@ -216,7 +210,7 @@ impl App {
                     }
                 }
                 #[cfg(feature = "openai")]
-                crate::settings::BackendOptions::OpenAI { settings } => {
+                settings::BackendOptions::OpenAI { settings } => {
                     let mut options = settings.chat_arguments.clone();
 
                     let story = if let Some(story) = self.story_mut() {
@@ -268,11 +262,11 @@ impl App {
     ) -> Result<(), Box<dyn std::error::Error>> {
         match self.settings.selected_generative_backend {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-            crate::settings::GenerativeBackend::DramaLlama => {
+            settings::GenerativeBackend::DramaLlama => {
                 self.drama_llama_worker.stop()?;
             }
             #[cfg(feature = "openai")]
-            crate::settings::GenerativeBackend::OpenAI => {
+            settings::GenerativeBackend::OpenAI => {
                 self.openai_worker.try_stop()?;
             }
         }
@@ -288,41 +282,18 @@ impl App {
     ) -> Result<(), Box<dyn std::error::Error>> {
         match self.settings.selected_generative_backend {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-            crate::settings::GenerativeBackend::DramaLlama => {
+            settings::GenerativeBackend::DramaLlama => {
                 if self.drama_llama_worker.shutdown().is_err() {
                     return Err("`drama_llama` worker thread did not shut down cleanly.".into());
                 }
             }
             #[cfg(feature = "openai")]
-            crate::settings::GenerativeBackend::OpenAI => {
+            settings::GenerativeBackend::OpenAI => {
                 self.openai_worker.shutdown()?;
             }
-            #[allow(unreachable_patterns)] // because conditional compilation``
-            _ => {}
         }
 
         Ok(())
-    }
-
-    /// Draw the toolbar.
-    pub fn draw_toolbar(
-        &mut self,
-        ctx: &eframe::egui::Context,
-        _frame: &mut eframe::Frame,
-    ) {
-        egui::TopBottomPanel::top("toolbar")
-            .resizable(true)
-            .show(ctx, |ui| {
-                egui::menu::bar(ui, |ui| {
-                    if ui.button("New Story").clicked() {
-                        let title = self.toolbar.title_buf.clone();
-                        let author = self.settings.default_author.clone();
-                        self.new_story(title, author);
-                        self.toolbar.title_buf.clear();
-                    }
-                    ui.text_edit_singleline(&mut self.toolbar.title_buf);
-                });
-            });
     }
 
     /// Draw sidebar.
@@ -366,25 +337,55 @@ impl App {
                 // These are our sidebar tabs.
                 // TODO: better tabs and layout
                 ui.horizontal(|ui| {
-                    if ui.button("Stories").clicked() {
-                        self.sidebar.page = SidebarPage::Stories;
-                    }
-                    if ui.button("Settings").clicked() {
-                        self.sidebar.page = SidebarPage::Settings;
-                    }
+                    ui.selectable_value(
+                        &mut self.sidebar.page,
+                        SidebarPage::Stories,
+                        "Stories",
+                    );
+                    ui.selectable_value(
+                        &mut self.sidebar.page,
+                        SidebarPage::Settings,
+                        "Settings",
+                    );
                 });
 
                 ui.heading(self.sidebar.page.to_string());
 
                 match self.sidebar.page {
                     SidebarPage::Settings => {
-                        self.settings.draw(ui);
+                        if let Some(action) = self.settings.draw(ui) {
+                            self.handle_settings_action(action);
+                        }
                     }
                     SidebarPage::Stories => {
                         self.draw_stories_tab(ui);
                     }
                 }
             });
+    }
+
+    /// Handle settings action.
+    pub fn handle_settings_action(&mut self, action: settings::Action) {
+        match action {
+            settings::Action::SwitchBackends { from, to } => {
+                debug_assert!(from != to);
+                debug_assert!(
+                    self.settings.selected_generative_backend == from
+                );
+
+                if let Err(e) = self.stop_generation() {
+                    eprintln!("Failed to stop generation: {}", e);
+                }
+
+                self.settings.selected_generative_backend = to;
+
+                if let Err(e) = self.reset_generative_backend() {
+                    eprintln!("Failed to start generative backend: {}", e);
+                }
+
+                self.settings.pending_backend_switch = None;
+            }
+        }
     }
 
     /// Draw the stories sidebar tab.
@@ -406,6 +407,16 @@ impl App {
                 self.active_story = None;
             }
         }
+
+        ui.horizontal(|ui| {
+            if ui.button("New").clicked() {
+                let title = self.sidebar.title_buf.clone();
+                let author = self.settings.default_author.clone();
+                self.new_story(title, author);
+                self.sidebar.title_buf.clear();
+            }
+            ui.text_edit_singleline(&mut self.sidebar.title_buf);
+        });
     }
 
     /// Draw the central panel.
@@ -438,10 +449,11 @@ impl App {
             // solution might perform better as well and I have some experience
             // with it.
             // In the meantime, the windows are, at least, collapsible.
+            let generation_in_progress = self.generation_in_progress;
             if let Some(story) = self.story_mut() {
                 // TODO: the response from story.draw could be more succinct. We
                 // only realy know if we need to start generation (for now).
-                if let Some(action) = story.draw(ui) {
+                if let Some(action) = story.draw(ui, generation_in_progress) {
                     if action.continue_ | action.generate.is_some() {
                         // The path has already been changed. We need only
                         // start generation.
@@ -469,10 +481,10 @@ impl App {
         }
     }
 
-    /// Update any generation that is in progress.
+    /// Update `new_pieces` with any newly generated pieces of text.
     #[cfg(feature = "generate")]
     fn update_generation(&mut self, new_pieces: &mut Vec<String>) {
-        use crate::settings::GenerativeBackend;
+        use settings::GenerativeBackend;
 
         if !self.generation_in_progress {
             return;
@@ -521,13 +533,13 @@ impl App {
                             // We can unlock the UI now.
                             self.generation_in_progress = false;
                         }
-                        crate::drama_llama::Response::Busy { command } => {
+                        crate::drama_llama::Response::Busy { request } => {
                             // This might happen because of data races, but really
                             // shouldn't.
                             // TODO: gui error message
                             log::error!(
-                                "Unexpected command sent to worker. Report this please: {:?}",
-                                command
+                                "Unexpected request sent to worker. Report this please: {:?}",
+                                request
                             )
                         }
                     },
@@ -555,16 +567,15 @@ impl App {
                         }
                         self.generation_in_progress = false;
                     }
-                    crate::openai::Response::Busy { command } => {
+                    crate::openai::Response::Busy { request } => {
                         log::error!(
-                                "Unexpected command sent to worker. Report this please: {:?}",
-                                command
+                                "Unexpected request sent to worker. Report this please: {:?}",
+                                request
                             )
                     }
                     crate::openai::Response::Models { models } => {
-                        if let crate::settings::BackendOptions::OpenAI {
-                            settings,
-                        } = self.settings.backend_options()
+                        if let settings::BackendOptions::OpenAI { settings } =
+                            self.settings.backend_options()
                         {
                             settings.models = models;
                         }
@@ -587,7 +598,6 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        self.draw_toolbar(ctx, frame);
         self.draw_sidebar(ctx, frame);
         self.draw_central_panel(ctx, frame);
     }

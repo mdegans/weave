@@ -4,15 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::node::{Meta, Node};
 
-#[derive(Default, Serialize, Deserialize)]
-pub struct Story {
-    active_path: Option<Vec<usize>>,
-    pub title: String,
-    author_to_id: HashMap<String, u8>,
-    id_to_author: Vec<String>,
-    root: Node<Meta>,
-}
-
 #[derive(derive_more::From)]
 pub enum AuthorID {
     String(String),
@@ -24,6 +15,19 @@ impl From<&str> for AuthorID {
         Self::String(author.to_string())
     }
 }
+
+static_assertions::assert_impl_all!(AuthorID: Send, Sync);
+
+#[derive(Default, Serialize, Deserialize)]
+pub struct Story {
+    active_path: Option<Vec<usize>>,
+    pub title: String,
+    author_to_id: HashMap<String, u8>,
+    id_to_author: Vec<String>,
+    root: Node<Meta>,
+}
+
+static_assertions::assert_impl_all!(Story: Send, Sync);
 
 impl Story {
     pub fn new(title: String, author: String) -> Self {
@@ -131,17 +135,24 @@ impl Story {
     }
 
     /// Draw UI for the story.
+    ///
+    /// If `lock_topology` is true, the user cannot add or remove nodes.
     #[cfg(feature = "gui")]
-    pub fn draw(&mut self, ui: &mut egui::Ui) -> Option<crate::node::Action> {
+    pub fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        lock_topology: bool,
+    ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
 
         ui.label(self.to_string());
 
         // Draw, and update active path if changed.
-        if let Some(PathAction { path, action }) = self
-            .root
-            .draw(ui, self.active_path.as_ref().map(|v| v.as_slice()))
-        {
+        if let Some(PathAction { path, action }) = self.root.draw(
+            ui,
+            self.active_path.as_ref().map(|v| v.as_slice()),
+            lock_topology,
+        ) {
             self.active_path = Some(path);
             // FIXME: as it turns out all the actions are mutually exclusive,
             // so we can probably use an enum rather than a struct. The user can
@@ -159,9 +170,12 @@ impl Story {
     }
 
     /// Remove the head as well as all its children.
+    ///
+    /// Note: The root node is never removed.
     pub fn decapitate(&mut self) {
         if let Some(path) = &mut self.active_path {
             if path.is_empty() {
+                // There is always at least one node in the story.
                 self.active_path = None;
             } else {
                 let head_index = path.pop().unwrap();

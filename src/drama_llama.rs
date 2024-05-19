@@ -2,28 +2,31 @@ use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 use drama_llama::{Engine, PredictOptions};
 
+/// A request to the worker thread (from another thread).
 #[derive(Debug)]
-pub(crate) enum Command {
+pub(crate) enum Request {
     Stop,
     Predict { text: String, opts: PredictOptions },
 }
 
+/// A response from the worker thread (to another thread).
 #[derive(Debug)]
 pub(crate) enum Response {
-    /// Worker is done and can accept new commands.
+    /// Worker is done and can accept new requests.
     Done,
-    /// The worker is busy and cannot accept new commands.
-    Busy { command: Command },
+    /// The worker is busy and cannot accept new requests.
+    Busy { request: Request },
     /// The worker has predicted a piece of text.
     Predicted { piece: String },
 }
 
+/// A worker helps to manage the `drama_llama` worker thread and its channels.
 #[derive(Default)]
 pub(crate) struct Worker {
     /// Thread handle to the worker.
     handle: Option<std::thread::JoinHandle<()>>,
     /// Channel to send text and options to the worker.
-    to_worker: Option<std::sync::mpsc::Sender<Command>>,
+    to_worker: Option<std::sync::mpsc::Sender<Request>>,
     /// Channel to receive strings until the worker is done, then `None`.
     from_worker: Option<std::sync::mpsc::Receiver<Response>>,
 }
@@ -78,11 +81,11 @@ impl Worker {
 
             while let Ok(msg) = from_main.recv() {
                 let (text, opts) = match msg {
-                    Command::Stop => {
+                    Request::Stop => {
                         to_main.send(Response::Done).ok();
                         break;
                     }
-                    Command::Predict { text, opts } => {
+                    Request::Predict { text, opts } => {
                         // If the requested context size is greater than the
                         // engine's we must recreate it.
                         if opts.n.get() > engine.n_ctx() as usize {
@@ -115,9 +118,9 @@ impl Worker {
                     // since it is the tightest loop we have.
                     match from_main.try_recv() {
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            // No new commands, nothing to do.
+                            // No new requests, nothing to do.
                         }
-                        Ok(Command::Stop) => {
+                        Ok(Request::Stop) => {
                             log::debug!("Generation cancelled.");
                             break;
                         }
@@ -130,7 +133,9 @@ impl Worker {
                             // We can't handle this command right now. We'll
                             // send a busy Response and the main thread can
                             // decide what to do.
-                            to_main.send(Response::Busy { command }).ok();
+                            to_main
+                                .send(Response::Busy { request: command })
+                                .ok();
                         }
                     }
 
@@ -153,10 +158,10 @@ impl Worker {
     /// Stop current generation after the next token. Does not shut down the
     /// worker thread. Does not block. Does not guarantee that generation will
     /// stop immediately. Use [`Worker::shutdown`] to shut down the worker.
-    pub fn stop(&mut self) -> Result<(), std::sync::mpsc::SendError<Command>> {
+    pub fn stop(&mut self) -> Result<(), std::sync::mpsc::SendError<Request>> {
         log::debug!("Telling worker to cancel current generation.");
         if let Some(to_worker) = self.to_worker.as_ref() {
-            to_worker.send(Command::Stop)?;
+            to_worker.send(Request::Stop)?;
         }
 
         Ok(())
@@ -203,21 +208,21 @@ impl Worker {
         &mut self,
         text: String,
         options: drama_llama::PredictOptions,
-    ) -> Result<(), std::sync::mpsc::SendError<Command>> {
+    ) -> Result<(), std::sync::mpsc::SendError<Request>> {
         if !self.is_alive() {
-            return Err(std::sync::mpsc::SendError(Command::Predict {
+            return Err(std::sync::mpsc::SendError(Request::Predict {
                 text,
                 opts: options,
             }));
         }
 
         if let Some(to_worker) = self.to_worker.as_ref() {
-            to_worker.send(Command::Predict {
+            to_worker.send(Request::Predict {
                 text,
                 opts: options,
             })?;
         } else {
-            return Err(std::sync::mpsc::SendError(Command::Predict {
+            return Err(std::sync::mpsc::SendError(Request::Predict {
                 text,
                 opts: options,
             }));

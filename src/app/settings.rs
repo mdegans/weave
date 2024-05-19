@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// Backend for generation.
 #[cfg(feature = "generate")]
 #[derive(
     Clone,
@@ -24,9 +25,32 @@ pub enum GenerativeBackend {
 }
 
 #[cfg(feature = "generate")]
+impl GenerativeBackend {
+    /// All the generative backends that can be used, in order of preference.
+    pub const ALL: &'static [&'static GenerativeBackend] = &[
+        #[cfg(feature = "drama_llama")]
+        &GenerativeBackend::DramaLlama,
+        #[cfg(feature = "ollama")]
+        &GenerativeBackend::Ollama,
+        #[cfg(feature = "openai")]
+        &GenerativeBackend::OpenAI,
+        #[cfg(feature = "claude")]
+        &GenerativeBackend::Claude,
+    ];
+
+    pub const DEFAULT: &'static GenerativeBackend = if Self::ALL.is_empty() {
+        panic!(
+            "There must be at least one generative backend feature enabled to use the `generate` feature."
+        );
+    } else {
+        Self::ALL[0]
+    };
+}
+
+#[cfg(feature = "generate")]
 impl Default for GenerativeBackend {
     fn default() -> Self {
-        *crate::consts::DEFAULT_GENERATIVE_BACKEND
+        *Self::DEFAULT
     }
 }
 
@@ -139,6 +163,8 @@ impl Into<std::path::PathBuf> for &mut BackendOptions {
     }
 }
 
+/// Crate settings.
+// This is used for App but not much else so we might feature gate this to `gui`
 #[derive(Default, Serialize, Deserialize)]
 pub struct Settings {
     /// Default author for new nodes.
@@ -157,21 +183,23 @@ pub struct Settings {
     // are not enabled.
     pub backend_options:
         std::collections::HashMap<GenerativeBackend, BackendOptions>,
+    #[serde(skip)]
+    /// Whether backend switching is pending.
+    pub pending_backend_switch: Option<GenerativeBackend>,
+}
+
+pub enum Action {
+    /// The user has requested to switch generative backends. When the switch is
+    /// complete, `Settings::pending_backend_switch` should be set to `None`.
+    SwitchBackends {
+        /// This backend should be shut down.
+        from: GenerativeBackend,
+        /// This backend should be started.
+        to: GenerativeBackend,
+    },
 }
 
 impl Settings {
-    pub fn new() -> Self {
-        Self {
-            default_author: "Anonymous".to_string(),
-            prompt_include_authors: true,
-            prompt_include_title: true,
-            #[cfg(feature = "generate")]
-            selected_generative_backend: GenerativeBackend::default(),
-            #[cfg(feature = "generate")]
-            backend_options: std::collections::HashMap::new(),
-        }
-    }
-
     #[cfg(feature = "generate")]
     pub fn backend_options(&mut self) -> &mut BackendOptions {
         self.backend_options
@@ -181,41 +209,59 @@ impl Settings {
             })
     }
 
+    /// Draws generation settings. If there is some additional action the
+    /// [`App`] should take, it will return that action.
+    ///
+    /// [`App`]: crate::app::App
     #[cfg(feature = "generate")]
-    pub fn draw_generation_settings(&mut self, ui: &mut egui::Ui) {
-        // Choose generative backend
+    pub fn draw_generation_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> Option<Action> {
+        let mut ret = None;
 
+        if let Some(backend) = &self.pending_backend_switch {
+            ui.label(format!(
+                "Switching backend to `{}`. Please wait.",
+                backend
+            ));
+        }
+
+        // Choose generative backend
         use std::num::NonZeroU128;
+
+        ui.checkbox(
+            &mut self.prompt_include_authors,
+            "Include author in prompt sent to model.",
+        )
+        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
+
+        ui.checkbox(
+            &mut self.prompt_include_title,
+            "Include title in prompt sent to model.",
+        )
+        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
 
         ui.label("Generative backend:");
         egui::ComboBox::from_label("Backend")
             .selected_text(self.selected_generative_backend.to_string())
             .show_ui(ui, |ui| {
-                for &backend in crate::consts::GENERATIVE_BACKENDS {
-                    // The linter is wrong. `backend` is used below.
-                    #[allow(unused_variables)]
+                for &backend in GenerativeBackend::ALL {
                     let active: bool =
-                        matches!(self.selected_generative_backend, backend);
+                        self.selected_generative_backend == *backend;
 
                     if ui
                         .selectable_label(active, backend.to_string())
                         .clicked()
                     {
-                        // We need to shutdown the worker if we're changing
-                        // backends because the worker is tied to the backend.
-                        // FIXME: Because the app has the worker, we should
-                        // return something indicating the worker should be
-                        // restarted. I can't think of another way. If we do
-                        // that, we can't change it immediatly here, but should
-                        // return the selected backend and then change it in the
-                        // App::update method. It's a bit of a mess.
-                        // Alternatively we could move the workers into the
-                        // settings struct. It's a bit odd but it would work and
-                        // might be cleaner. As it stands, a running worker for
-                        // a given backend will keep running until the app is
-                        // closed. That might not be terrible, but some backends
-                        // can use a lot of resources, like the local models.
-                        self.selected_generative_backend = *backend;
+                        ret = Some(Action::SwitchBackends {
+                            from: self.selected_generative_backend,
+                            to: *backend,
+                        });
+
+                        // We don't immediately switch the backend because we
+                        // want to clean up first. The `App` will switch the
+                        // `selected_generative_backend` after the cleanup.
                     }
                 }
             });
@@ -365,25 +411,6 @@ impl Settings {
                     if ui.button("Add stop string").clicked() {
                         predict_options.stop_strings.push(Default::default());
                     }
-
-                    ui.label("Stop token sequences:").on_hover_text_at_pointer("Stop generating when any of these token sequences are predicted. Note that any model-specific sequences will be added automatically on generation and not shown here.");
-                    for (i, seq) in predict_options.stop_sequences.iter_mut().enumerate() {
-                        // This might not work very well because the edit will
-                        // be cleared when the string is updated and this
-                        // happens at every frame. We could use a separate
-                        // buffer, but it would have to be associated with the
-                        // one that is being edited. If this doesn't work we can
-                        // have a delete button and a separate add button with a
-                        // text field.
-                        let mut s = int_vec_to_string(seq);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.text_edit_singleline(&mut s);
-                            if ui.button("X").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                        *seq = string_to_int_vec(&s);
-                    }
                 });
 
                 // TODO: Add ui for options. This is perhaps better done in
@@ -397,29 +424,23 @@ impl Settings {
             #[allow(unreachable_patterns)] // because same as above
             _ => {}
         }
+
+        ret
     }
 
-    #[cfg(feature = "gui")]
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         ui.label("Default author:");
         ui.text_edit_singleline(&mut self.default_author);
 
-        ui.checkbox(
-            &mut self.prompt_include_authors,
-            "Include author in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases.");
-
-        ui.checkbox(
-            &mut self.prompt_include_title,
-            "Include title in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases.");
-
         #[cfg(feature = "generate")]
         {
-            self.draw_generation_settings(ui);
+            ui.separator();
+            ui.heading("Generation");
+            return self.draw_generation_settings(ui);
         }
+
+        #[cfg(not(feature = "generate"))]
+        None
     }
 
     /// Configure model-specific settings when a local model is loaded. It will:
@@ -523,17 +544,4 @@ impl Settings {
             log::error!("Make sure you have an API key set.");
         }
     }
-}
-
-#[cfg(feature = "gui")]
-fn int_vec_to_string(vec: &[i32]) -> String {
-    vec.iter()
-        .map(|&i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-#[cfg(feature = "gui")]
-fn string_to_int_vec(s: &str) -> Vec<i32> {
-    s.split(',').filter_map(|s| s.trim().parse().ok()).collect()
 }
