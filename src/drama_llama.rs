@@ -2,21 +2,23 @@ use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 use drama_llama::{Engine, PredictOptions};
 
-/// A request to the worker thread (from another thread).
+/// A request to the [`Worker`] thread (from another thread).
 #[derive(Debug)]
 pub(crate) enum Request {
+    /// The [`Worker`] should cancel the current generation.
     Stop,
+    /// The [`Worker`] should continue the `text` with the given `opts`.
     Predict { text: String, opts: PredictOptions },
 }
 
-/// A response from the worker thread (to another thread).
+/// A response from the [`Worker`] thread (to another thread).
 #[derive(Debug)]
 pub(crate) enum Response {
-    /// Worker is done and can accept new requests.
+    /// [`Worker`] is done and can accept new requests.
     Done,
-    /// The worker is busy and cannot accept new requests.
+    /// The [`Worker`] is busy and cannot accept new requests.
     Busy { request: Request },
-    /// The worker has predicted a piece of text.
+    /// The [`Worker`] has predicted a piece of text.
     Predicted { piece: String },
 }
 
@@ -41,7 +43,11 @@ impl Worker {
     // a whole bunch of stuff and likely introduce async rumble jumble. It may
     // not be worth it since blocking is so rare. It only happens on shutdown or
     // model change, and only then in the middle of an inference.
-    pub fn start(&mut self, model: PathBuf) -> Result<(), std::io::Error> {
+    pub fn start(
+        &mut self,
+        model: PathBuf,
+        context: egui::Context,
+    ) -> Result<(), std::io::Error> {
         // Loading is impossible
         if !model.exists() {
             return Err(std::io::Error::new(
@@ -83,6 +89,7 @@ impl Worker {
                 let (text, opts) = match msg {
                     Request::Stop => {
                         to_main.send(Response::Done).ok();
+                        context.request_repaint();
                         break;
                     }
                     Request::Predict { text, opts } => {
@@ -136,15 +143,25 @@ impl Worker {
                             to_main
                                 .send(Response::Busy { request: command })
                                 .ok();
+                            context.request_repaint();
                         }
                     }
 
                     // Send the predicted piece back to the main thread.
                     to_main.send(Response::Predicted { piece }).ok();
+                    context.request_repaint();
                 }
 
                 // We are ready for the next command.
                 to_main.send(Response::Done).ok();
+                // When we're done we should repaint the UI, but we need to make
+                // sure the main thread has time to process the message first
+                // or we'll redraw before the last token is added. 100ms should
+                // be enough time.
+                context.request_repaint();
+                context.request_repaint_after(
+                    std::time::Duration::from_millis(100),
+                );
             }
         });
 

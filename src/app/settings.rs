@@ -220,6 +220,9 @@ impl Settings {
     ) -> Option<Action> {
         let mut ret = None;
 
+        // FIXME: This doesn't display because the backend switch is blocking
+        // and by the time the UI is drawn, the backend has already switched.
+        // Not sure how to fix this easily.
         if let Some(backend) = &self.pending_backend_switch {
             ui.label(format!(
                 "Switching backend to `{}`. Please wait.",
@@ -282,10 +285,7 @@ impl Settings {
                 ui.label(format!("Model: {:?}", model));
                 if ui.button("Change model").clicked() {
                     let filter = move |path: &std::path::Path| {
-                        path.extension()
-                            .and_then(std::ffi::OsStr::to_str)
-                            .map(|ext| ext == "gguf")
-                            .unwrap_or(false)
+                        path.extension().map_or(false, |ext| ext == "gguf")
                     };
                     let start = if model.as_os_str().is_empty() {
                         None
@@ -307,6 +307,7 @@ impl Settings {
                                 path,
                             )
                         }
+                        *file_dialog = None;
                     }
                 }
 
@@ -441,31 +442,6 @@ impl Settings {
 
         #[cfg(not(feature = "generate"))]
         None
-    }
-
-    /// Configure model-specific settings when a local model is loaded. It will:
-    /// * Set the model path if the model is valid.
-    /// * Set the maximum context size if the model is valid.
-    ///
-    /// This can block, but only briefly. Mmap is used by default and we're just
-    /// reading the metadata. Call it on setup, from the worker thread, or from
-    /// the main thread if it's really necessary.
-    // Like above in the draw code. If we're changing the model we do need to
-    // validate it and the api doesn't allow us to do that without blockign
-    // currently.
-    #[cfg(feature = "generate")]
-    pub fn configure_for_new_local_model(&mut self, path: &std::path::Path) {
-        match self.backend_options() {
-            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-            BackendOptions::DramaLlama {
-                model,
-                max_context_size,
-                ..
-            } => {
-                Self::drama_llama_helper(model, max_context_size, path);
-            }
-            _ => {}
-        }
     }
 
     /// This should be called once on startup to configure the backend settings,

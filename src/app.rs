@@ -21,18 +21,27 @@ pub struct App {
     stories: Vec<Story>,
     settings: Settings,
     sidebar: Sidebar,
+    /// Modal error message text. If this is `Some`, the UI should display an
+    /// error message.
+    errmsg: Option<String>,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
     #[cfg(feature = "openai")]
     openai_worker: crate::openai::Worker,
     #[cfg(feature = "generate")]
     generation_in_progress: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    save_dialog: Option<egui_file::FileDialog>,
+    #[cfg(not(target_arch = "wasm32"))]
+    saving_txt: bool,
 }
 
 // {"default_author":"","prompt_include_authors":false,"prompt_include_title":false,"selected_generative_backend":"OpenAI","backend_options":{"DramaLlama":{"DramaLlama":{"model":"","predict_options":{"n":512,"seed":1337,"stop_sequences":[],"stop_strings":[],"regex_stop_sequences":[],"sample_options":{"modes":[],"repetition":null}}}},"OpenAI":{"OpenAI":{"settings":{"openai_api_key":"hidden in keyring","chat_arguments":{"model":"gpt-3.5-turbo","messages":[{"role":"system","content":"A user and an assistant are collaborating on a story. The user starts by writing a paragraph, then the assistant writes a paragraph, and so on. Both will be credited for the end result.'"},{"role":"user","content":"Hi, GPT! Let's write a story together."},{"role":"assistant","content":"Sure, I'd love to help. How about you start us off? I'll try to match your tone and style."}],"temperature":1.0,"top_p":1.0,"n":null,"stop":null,"max_tokens":1024,"presence_penalty":0.0,"frequency_penalty":0.0,"user":null}}}}}}
 
 impl App {
     pub fn new<'s>(cc: &eframe::CreationContext<'s>) -> Self {
+        let ctx = cc.egui_ctx.clone();
+
         let stories = cc
             .storage
             .map(|storage| {
@@ -80,7 +89,7 @@ impl App {
         };
 
         // Handle generation backends
-        if let Err(e) = new.start_generative_backend() {
+        if let Err(e) = new.start_generative_backend(ctx) {
             eprintln!("Failed to start generative backend: {}", e);
             // This is fine. It can be restarted later once settings are fixed
             // or the user chooses a different backend.
@@ -104,10 +113,12 @@ impl App {
         self.active_story.map(move |i| self.stories.get_mut(i))?
     }
 
-    /// Starts the generative backend if it is not already running.
+    /// Starts the generative backend if it is not already running. A context
+    /// is required to request redraws from the worker thread.
     #[cfg(feature = "generate")]
     pub fn start_generative_backend(
         &mut self,
+        context: egui::Context,
     ) -> Result<(), Box<dyn std::error::Error>> {
         log::info!(
             "Starting generative backend: {}",
@@ -118,11 +129,11 @@ impl App {
         match self.settings.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             settings::BackendOptions::DramaLlama { model, .. } => {
-                self.drama_llama_worker.start(model.clone())?;
+                self.drama_llama_worker.start(model.clone(), context)?;
             }
             #[cfg(feature = "openai")]
             settings::BackendOptions::OpenAI { settings } => {
-                self.openai_worker.start(&settings.openai_api_key);
+                self.openai_worker.start(&settings.openai_api_key, context);
             }
         }
 
@@ -134,9 +145,10 @@ impl App {
     #[cfg(feature = "generate")]
     pub fn reset_generative_backend(
         &mut self,
+        context: egui::Context,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.shutdown_generative_backend()?;
-        self.start_generative_backend()?;
+        self.start_generative_backend(context)?;
 
         Ok(())
     }
@@ -154,7 +166,7 @@ impl App {
             panic!("Generation already in progress. This is a bug. Please report it.");
         }
 
-        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+        #[cfg(all(feature = "generate", not(target_arch = "wasm32")))]
         {
             let include_authors = self.settings.prompt_include_authors;
             let include_title = self.settings.prompt_include_title;
@@ -354,7 +366,7 @@ impl App {
                 match self.sidebar.page {
                     SidebarPage::Settings => {
                         if let Some(action) = self.settings.draw(ui) {
-                            self.handle_settings_action(action);
+                            self.handle_settings_action(action, ctx);
                         }
                     }
                     SidebarPage::Stories => {
@@ -364,8 +376,169 @@ impl App {
             });
     }
 
+    /// Draw error message if there is one. Returns `true` if the error message
+    /// is displayed. This function accepts a closure which can be used to
+    /// display additional UI elements, such as a button to handle the error.
+    pub fn draw_error_message(
+        &mut self,
+        ctx: &egui::Context,
+        mut f: Option<Box<dyn FnMut(&mut egui::Ui)>>,
+    ) -> bool {
+        let mut closed = false; // because two mutable references
+        if let Some(msg) = &self.errmsg {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::Window::new("Error").show(ui.ctx(), |ui| {
+                    ui.label(msg);
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            closed = true;
+                        }
+                        if let Some(f) = &mut f {
+                            f(ui);
+                        }
+                    })
+                });
+            });
+        } else {
+            return false;
+        }
+        if closed {
+            self.errmsg = None;
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn draw_save_buttons(&mut self, ui: &mut egui::Ui) {
+        ui.label("Save");
+        ui.horizontal(|ui| {
+            let filter = Box::new(move |path: &std::path::Path| {
+                path.extension().map_or(false, |ext| ext == "json")
+            });
+
+            let save_btn = ui
+                .button("Save")
+                .on_hover_text_at_pointer("Save story to JSON.");
+
+            let export = ui
+                .button("Export")
+                .on_hover_text_at_pointer("Export active story path to Markdown.");
+
+            let load_btn = ui
+                .button("Load")
+                .on_hover_text_at_pointer("Load story from JSON.");
+
+            if save_btn.clicked() {
+                let mut dialog = egui_file::FileDialog::save_file(None)
+                        .show_files_filter(filter);
+                dialog.open();
+
+                self.save_dialog = Some(dialog);
+            } else if load_btn.clicked() {
+                let mut dialog = egui_file::FileDialog::open_file(None)
+                        .show_files_filter(filter);
+                dialog.open();
+
+                self.saving_txt = false;
+                self.save_dialog = Some(dialog);
+            } else if export.clicked() {
+                let filter = Box::new(move |path: &std::path::Path| {
+                    path.extension().map_or(false, |ext| ext == "md")
+                });
+
+                let mut dialog = egui_file::FileDialog::open_file(None)
+                        .show_files_filter(filter);
+                dialog.open();
+
+                self.saving_txt = true;
+                self.save_dialog = Some(dialog);
+            }
+
+            if let Some(dialog) = &mut self.save_dialog {
+                if dialog.show(ui.ctx()).selected() {
+                    if let Some(path) = dialog.path() {
+                        match dialog.dialog_type() {
+                            egui_file::DialogType::OpenFile => {
+                                let text = match std::fs::read_to_string(path) {
+                                    Ok(text) => text,
+                                    Err(e) => {
+                                        self.errmsg = Some(format!(
+                                            "Failed to read `{:?}` because: {}",
+                                            path,
+                                            e
+                                        ));
+                                        return;
+                                    }
+                                };
+                                let story:Story = match serde_json::from_str(&text) {
+                                    Ok(story) => story,
+                                    Err(e) => {
+                                        self.errmsg = Some(format!(
+                                            "Failed to parse `{:?}` because: {}",
+                                            path,
+                                            e
+                                        ));
+                                        return;
+                                    }
+                                };
+
+                                self.stories.push(story);
+                            },
+                            egui_file::DialogType::SaveFile => {
+                                let active_story_index = match self.active_story {
+                                    Some(i) => i,
+                                    None => {
+                                        self.errmsg = Some("No active story to save.".to_string());
+                                        return;
+                                    }
+                                };
+
+                                let payload = if self.saving_txt {
+                                    self.stories[active_story_index].to_string()
+                                } else {
+                                    match serde_json::to_string(&self.stories[active_story_index]) {
+                                        Ok(json) => json,
+                                        Err(e) => {
+                                            self.errmsg = Some(format!(
+                                                "Failed to serialize stories because: {}",
+                                                e
+                                            ));
+                                            return;
+                                        }
+                                    }
+                                };
+
+                                match std::fs::write(path, payload) {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        self.errmsg = Some(format!(
+                                            "Failed to write `{:?}` because: {}",
+                                            path,
+                                            e
+                                        ));
+                                        return;
+                                    }
+                                }
+                            },
+                            egui_file::DialogType::SelectFolder => {
+                                unreachable!("Because we don't instantiate this type above.")
+                            },
+                        }
+                    }
+                    self.save_dialog = None;
+                }
+            }
+        });
+    }
+
     /// Handle settings action.
-    pub fn handle_settings_action(&mut self, action: settings::Action) {
+    pub fn handle_settings_action(
+        &mut self,
+        action: settings::Action,
+        context: &egui::Context,
+    ) {
         match action {
             settings::Action::SwitchBackends { from, to } => {
                 debug_assert!(from != to);
@@ -379,7 +552,7 @@ impl App {
 
                 self.settings.selected_generative_backend = to;
 
-                if let Err(e) = self.reset_generative_backend() {
+                if let Err(e) = self.reset_generative_backend(context.clone()) {
                     eprintln!("Failed to start generative backend: {}", e);
                 }
 
@@ -417,6 +590,11 @@ impl App {
             }
             ui.text_edit_singleline(&mut self.sidebar.title_buf);
         });
+
+        // We might not support wasm at all, but if we do this will have to be
+        // implemented differently. Skip it for now.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.draw_save_buttons(ui);
     }
 
     /// Draw the central panel.
@@ -574,6 +752,8 @@ impl App {
                             )
                     }
                     crate::openai::Response::Models { models } => {
+                        // because conditional compilation
+                        #[allow(irrefutable_let_patterns)]
                         if let settings::BackendOptions::OpenAI { settings } =
                             self.settings.backend_options()
                         {
@@ -598,6 +778,10 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
+        if self.draw_error_message(ctx, None) {
+            // An error message is displayed. We skip the rest of the UI.
+            return;
+        }
         self.draw_sidebar(ctx, frame);
         self.draw_central_panel(ctx, frame);
     }

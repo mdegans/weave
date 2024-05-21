@@ -480,7 +480,7 @@ pub(crate) struct Worker {
 impl Worker {
     /// Start the worker thread. If the worker is already alive, this is a
     /// no-op. Use `restart` to restart the worker.
-    pub fn start(&mut self, api_key: &str) {
+    pub fn start(&mut self, api_key: &str, context: egui::Context) {
         let api_key = api_key.to_string();
         if self.is_alive() {
             log::debug!("Worker is already alive");
@@ -521,6 +521,7 @@ impl Worker {
                 // made so we can support multiple "heads" and lock the UI
                 // appropriately.
                 while let Some(request) = from_main.next().await {
+                    // Process the request.
                     let send_response = match request {
                         Request::Stop => {
                             // We are already stopped. We just tell main we're
@@ -606,7 +607,9 @@ impl Worker {
                                             match to_main
                                                 .send(Response::Predicted { piece: delta })
                                                 .await {
-                                                Ok(_) => {}
+                                                Ok(_) => {
+                                                    context.request_repaint();
+                                                }
                                                 Err(e) => {
                                                     log::error!(
                                                         "Couldn't send predicted piece: {}",
@@ -636,10 +639,16 @@ impl Worker {
                         }
                     };
 
+                    // We have sent a response. Was it successful?
                     match send_response {
                         Ok(_) => {
                             // Response sent successfully. We can now accept the
-                            // next request.
+                            // next request. Whenever the main thread receives
+                            // a message, we should repaint the UI. We'll use a
+                            // slight delay to make sure the main thread has
+                            // time to process the message. This is only fired
+                            // when the 
+                            context.request_repaint_after(std::time::Duration::from_millis(100));
                         }
                         Err(e) => {
                             if e.is_disconnected() {

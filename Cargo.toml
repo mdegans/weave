@@ -2,6 +2,33 @@
 name = "weave"
 version = "0.1.0"
 edition = "2021"
+description = "A tool for collaborative generative writing."
+
+[package.metadata.bundle]
+name = "Weave"
+identifier = "dev.mdegans.weave"
+resources = ["resources"]
+copyright = "2024, Michael de Gans"
+category = "public.app-category.productivity"
+long_description = """
+A tool for collaborative generative writing. It supports multiple generative
+backends such as OpenAI and LLaMA. Stories can branch, allowing for multiple
+paths through a story. It is designed to be used by writers, game developers,
+or anyone who needs to generate text.
+"""
+icon = [
+    # "resources/icon.32.png",
+    # "resources/icon.32@2x.png",
+    # "resources/icon.64.png",
+    # "resources/icon.64@2x.png",
+    # "resources/icon.128.png",
+    # "resources/icon.128@2x.png",
+    "resources/icon.256.png",
+    # "resources/icon.256@2x.png",
+    "resources/icon.512.png",
+    "resources/icon.512@2x.png",
+    # "resources/icon.1024.png",
+]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -40,6 +67,7 @@ openai = [
     "dep:futures",
     "dep:keyring",
     "dep:tokio",
+    "tokio/rt-multi-thread",
 ]
 ollama = ["generate", "dep:ollama-rs"]
 # TODO: Claude does not yet have a good rust library. Will have to use reqwests
