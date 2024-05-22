@@ -58,8 +58,16 @@ futures = { version = "0.3", features = ["executor"], optional = true }
 keyring = { version = "2", optional = true }
 
 ollama-rs = { version = "0.1.9", optional = true }
-drama_llama = { version = "0.3", optional = true }
 openai-rust = { version = "1.5", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+# This will fail on very old GPUs, but those will be slow for inference anyway.
+# If people want support for very old GPUs replace `cuda_f16` with `cuda`.
+drama_llama = { version = "0.3", optional = true, features = ["cuda_f16"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "linux")))'.dependencies]
+drama_llama = { version = "0.3", optional = true }
+
 
 [features]
 default = []
