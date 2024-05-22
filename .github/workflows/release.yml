@@ -45,7 +45,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mac-app
-          path: target/release/bundle/osx/Weave.app
+          path: target/release/bundle/osx/
           if-no-files-found: error
           compression-level: 9
           overwrite: true
@@ -68,7 +68,10 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Install CUDA
-        run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
+        # Cuda is not found but it works on local. I'm going to try to add
+        # libcudart12 since it's the only difference, but it should be a
+        # dependency of nvidia-cuda-toolkit IDK what's going on
+        run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev libcudart12
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
@@ -83,7 +86,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-binary
-          path: target/release/bundle/linux/Weave
+          path: target/release/bundle/linux/
           if-no-files-found: error
           compression-level: 9
           overwrite: true
@@ -119,7 +122,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: target/release/bundle/windows/Weave.exe
+          path: target/release/bundle/windows/
           if-no-files-found: error
           compression-level: 9
           overwrite: true
@@ -229,12 +232,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: mac-app
-          path: target/release/bundle/osx/Weave.app
+          path: target/release/bundle/osx/
       - name: Download Linux Binary
         uses: actions/download-artifact@v4
         with:
           name: linux-binary
-          path: target/release/bundle/linux/Weave
+          path: target/release/bundle/linux/
       - name: Download Windows Binary
         uses: actions/download-artifact@v4
         with:
@@ -244,7 +247,7 @@ jobs:
         uses: softprops/action-gh-release@v2.0.5
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/bundle/osx/Weave.app
+          files: target/release/bundle/osx/
           token: ${{ secrets.PAT }}
       - name: Publish Linux Binary
         uses: softprops/action-gh-release@v2.0.5
