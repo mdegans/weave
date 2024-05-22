@@ -71,6 +71,9 @@ pub struct Action {
     pub continue_: bool,
     /// If new node should be generated, and it's child index.
     pub generate: Option<usize>,
+    /// If the node (or tree) has been modified. This is an optimization to
+    /// avoid unnecessary rendering, allocation, and node traversal.
+    pub modified: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -460,6 +463,13 @@ impl Node<Meta> {
                     self.pieces.push(Piece {
                         end: self.text.len(),
                     });
+                    response = match response {
+                        Some(mut action) => {
+                            action.modified = true;
+                            Some(action)
+                        }
+                        None => Some(Action { modified: true, ..Default::default() }),
+                    };
                 }
 
                 response

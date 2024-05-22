@@ -1,6 +1,9 @@
 mod settings;
 
-use {self::settings::Settings, crate::story::Story};
+use {
+    self::settings::{BackendOptions, Settings},
+    crate::story::Story,
+};
 
 #[derive(Default, PartialEq, derive_more::Display)]
 pub enum SidebarPage {
@@ -10,20 +13,68 @@ pub enum SidebarPage {
 }
 
 #[derive(Default)]
-pub struct Sidebar {
+struct LeftSidebar {
     // New story title buffer
-    title_buf: String,
-    page: SidebarPage,
+    pub title_buf: String,
+    pub page: SidebarPage,
+    pub visible: bool,
 }
+
+#[derive(Default)]
+struct RightSidebar {
+    pub text: Option<String>,
+    pub text_current: bool,
+    pub visible: bool,
+    pub model_view: bool,
+}
+
+impl RightSidebar {
+    /// The story text will be updated on the next draw if this is called. This
+    /// is an optimization to avoid reformatting the story each frame if it
+    /// hasn't changed.
+    // TODO: This might not actually be worth it. We shoudl profile first since
+    // formatting the story and traversing the tree isn't actually all that
+    // expensive, but it could be if there are many nodes. There is a lot of CPU
+    // usage, but it doens't seem to be coming from our code. My guess is using
+    // `egui::Window` for each node is part of the problem.
+    pub fn refresh_story(&mut self) {
+        self.text_current = false;
+    }
+}
+
+#[derive(derivative::Derivative, thiserror::Error)]
+#[derivative(Debug)]
+#[error("{}", message)]
+struct Error {
+    message: String,
+    #[derivative(Debug = "ignore")]
+    action: Option<Box<dyn FnMut(&mut egui::Ui)>>,
+}
+
+impl From<&str> for Error {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self {
+            message: message.into(),
+            action: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct App {
     active_story: Option<usize>,
     stories: Vec<Story>,
     settings: Settings,
-    sidebar: Sidebar,
-    /// Modal error message text. If this is `Some`, the UI should display an
-    /// error message.
-    errmsg: Option<String>,
+    left_sidebar: LeftSidebar,
+    right_sidebar: RightSidebar,
+    /// Modal error messages.
+    errors: Vec<Error>,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
     #[cfg(feature = "openai")]
@@ -41,6 +92,7 @@ pub struct App {
 impl App {
     pub fn new<'s>(cc: &eframe::CreationContext<'s>) -> Self {
         let ctx = cc.egui_ctx.clone();
+        let mut errors: Vec<Error> = Vec::new();
 
         let stories = cc
             .storage
@@ -52,7 +104,13 @@ impl App {
                         match serde_json::from_str(&s) {
                             Ok(stories) => Some(stories),
                             Err(e) => {
-                                log::error!("Failed to load stories: {}", e);
+                                errors.push(
+                                    format!(
+                                        "Failed to load stories because: {}",
+                                        e
+                                    )
+                                    .into(),
+                                );
                                 None
                             }
                         }
@@ -71,7 +129,13 @@ impl App {
                         match serde_json::from_str(&s) {
                             Ok(settings) => Some(settings),
                             Err(e) => {
-                                log::error!("Failed to load settings: {}", e);
+                                errors.push(
+                                    format!(
+                                        "Failed to load settings because:{}",
+                                        e
+                                    )
+                                    .into(),
+                                );
                                 None
                             }
                         }
@@ -309,7 +373,7 @@ impl App {
     }
 
     /// Draw sidebar.
-    pub fn draw_sidebar(
+    pub fn draw_left_sidebar(
         &mut self,
         ctx: &eframe::egui::Context,
         _frame: &mut eframe::Frame,
@@ -317,7 +381,7 @@ impl App {
         egui::SidePanel::left("sidebar")
             .default_width(200.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show_animated(ctx, self.left_sidebar.visible, |ui| {
                 // Stuff could break if the user changes the story or backend
                 // settings while generation is in progress. The easiest way to
                 // fix this is just to make such actions impossible so we'll
@@ -350,20 +414,20 @@ impl App {
                 // TODO: better tabs and layout
                 ui.horizontal(|ui| {
                     ui.selectable_value(
-                        &mut self.sidebar.page,
+                        &mut self.left_sidebar.page,
                         SidebarPage::Stories,
                         "Stories",
                     );
                     ui.selectable_value(
-                        &mut self.sidebar.page,
+                        &mut self.left_sidebar.page,
                         SidebarPage::Settings,
                         "Settings",
                     );
                 });
 
-                ui.heading(self.sidebar.page.to_string());
+                ui.heading(self.left_sidebar.page.to_string());
 
-                match self.sidebar.page {
+                match self.left_sidebar.page {
                     SidebarPage::Settings => {
                         if let Some(action) = self.settings.draw(ui) {
                             self.handle_settings_action(action, ctx);
@@ -376,24 +440,90 @@ impl App {
             });
     }
 
+    pub fn draw_right_sidebar(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        _frame: &mut eframe::Frame,
+    ) {
+        if self.story().is_none() {
+            return;
+        }
+        // Story is some. We can unwrap below. Story cannot change while this
+        // function is running since it is not accessable from any other
+        // thread.
+
+        egui::SidePanel::right("right_sidebar")
+            .default_width(200.0)
+            .resizable(true)
+            .show_animated(ctx, self.right_sidebar.visible, |ui| {
+                if self
+                    .settings
+                    .selected_generative_backend
+                    .supports_model_view()
+                {
+                    if ui
+                        .checkbox(
+                            &mut self.right_sidebar.model_view,
+                            "model view",
+                        )
+                        .on_hover_text_at_pointer(
+                            "Show exactly what the model is prompted with.",
+                        )
+                        .changed()
+                    {
+                        self.right_sidebar.refresh_story();
+                    }
+                }
+
+                let include_authors = if self.right_sidebar.model_view {
+                    self.settings.prompt_include_authors
+                } else {
+                    true
+                };
+                let include_title = if self.right_sidebar.model_view {
+                    self.settings.prompt_include_title
+                } else {
+                    true
+                };
+
+                if !self.right_sidebar.text_current {
+                    // We need to shuffle the text around a bit. We do this
+                    // because mutable references, and to avoid reallocation
+                    let mut text =
+                        self.right_sidebar.text.take().unwrap_or(String::new());
+                    text.clear();
+                    self.story()
+                        .unwrap()
+                        .format_full(&mut text, include_authors, include_title)
+                        .unwrap();
+                    self.right_sidebar.text = Some(text);
+                }
+
+                // We have some text to display because there is a story and
+                // formatting cannot actually fail.
+                ui.label(self.right_sidebar.text.as_ref().unwrap());
+            });
+    }
+
     /// Draw error message if there is one. Returns `true` if the error message
     /// is displayed. This function accepts a closure which can be used to
     /// display additional UI elements, such as a button to handle the error.
-    pub fn draw_error_message(
-        &mut self,
-        ctx: &egui::Context,
-        mut f: Option<Box<dyn FnMut(&mut egui::Ui)>>,
-    ) -> bool {
+    pub fn draw_error_messages(&mut self, ctx: &egui::Context) -> bool {
         let mut closed = false; // because two mutable references
-        if let Some(msg) = &self.errmsg {
+        if let Some(Error {
+            message,
+            ref mut action,
+        }) = self.errors.first_mut()
+        {
+            log::error!("{}", message);
             egui::CentralPanel::default().show(ctx, |ui| {
                 egui::Window::new("Error").show(ui.ctx(), |ui| {
-                    ui.label(msg);
+                    ui.label(message.as_str());
                     ui.horizontal(|ui| {
                         if ui.button("Close").clicked() {
                             closed = true;
                         }
-                        if let Some(f) = &mut f {
+                        if let Some(f) = action {
                             f(ui);
                         }
                     })
@@ -403,8 +533,8 @@ impl App {
             return false;
         }
         if closed {
-            self.errmsg = None;
-            return false;
+            self.errors.remove(0);
+            return !self.errors.is_empty();
         } else {
             return true;
         }
@@ -464,22 +594,22 @@ impl App {
                                 let text = match std::fs::read_to_string(path) {
                                     Ok(text) => text,
                                     Err(e) => {
-                                        self.errmsg = Some(format!(
+                                        self.errors.push(format!(
                                             "Failed to read `{:?}` because: {}",
                                             path,
                                             e
-                                        ));
+                                        ).into());
                                         return;
                                     }
                                 };
                                 let story:Story = match serde_json::from_str(&text) {
                                     Ok(story) => story,
                                     Err(e) => {
-                                        self.errmsg = Some(format!(
+                                        self.errors.push(format!(
                                             "Failed to parse `{:?}` because: {}",
                                             path,
                                             e
-                                        ));
+                                        ).into());
                                         return;
                                     }
                                 };
@@ -490,7 +620,7 @@ impl App {
                                 let active_story_index = match self.active_story {
                                     Some(i) => i,
                                     None => {
-                                        self.errmsg = Some("No active story to save.".to_string());
+                                        self.errors.push("No active story to save.".into());
                                         return;
                                     }
                                 };
@@ -501,10 +631,10 @@ impl App {
                                     match serde_json::to_string(&self.stories[active_story_index]) {
                                         Ok(json) => json,
                                         Err(e) => {
-                                            self.errmsg = Some(format!(
+                                            self.errors.push(format!(
                                                 "Failed to serialize stories because: {}",
                                                 e
-                                            ));
+                                            ).into());
                                             return;
                                         }
                                     }
@@ -513,11 +643,11 @@ impl App {
                                 match std::fs::write(path, payload) {
                                     Ok(_) => {},
                                     Err(e) => {
-                                        self.errmsg = Some(format!(
+                                        self.errors.push(format!(
                                             "Failed to write `{:?}` because: {}",
                                             path,
                                             e
-                                        ));
+                                        ).into());
                                         return;
                                     }
                                 }
@@ -558,6 +688,30 @@ impl App {
 
                 self.settings.pending_backend_switch = None;
             }
+            #[cfg(feature = "openai")]
+            settings::Action::OpenAI(action) => match action {
+                crate::openai::SettingsAction::FetchModels => {
+                    if self.openai_worker.is_alive() {
+                        // Non-blocking. We'll get a response back when the
+                        // worker is done fetching.
+                        self.openai_worker.fetch_models().ok();
+                    } else {
+                        if let BackendOptions::OpenAI { settings } =
+                            self.settings.backend_options()
+                        {
+                            if let Err(e) = settings.fetch_models_sync(None) {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to fetch OpenAI models because: {}",
+                                        e
+                                    )
+                                    .into(),
+                                );
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 
@@ -583,12 +737,12 @@ impl App {
 
         ui.horizontal(|ui| {
             if ui.button("New").clicked() {
-                let title = self.sidebar.title_buf.clone();
+                let title = self.left_sidebar.title_buf.clone();
                 let author = self.settings.default_author.clone();
                 self.new_story(title, author);
-                self.sidebar.title_buf.clear();
+                self.left_sidebar.title_buf.clear();
             }
-            ui.text_edit_singleline(&mut self.sidebar.title_buf);
+            ui.text_edit_singleline(&mut self.left_sidebar.title_buf);
         });
 
         // We might not support wasm at all, but if we do this will have to be
@@ -628,6 +782,7 @@ impl App {
             // with it.
             // In the meantime, the windows are, at least, collapsible.
             let generation_in_progress = self.generation_in_progress;
+            let mut update_right_sidebar = false;
             if let Some(story) = self.story_mut() {
                 // TODO: the response from story.draw could be more succinct. We
                 // only realy know if we need to start generation (for now).
@@ -637,8 +792,17 @@ impl App {
                         // start generation.
                         start_generation = true;
                     }
+                    if action.modified {
+                        update_right_sidebar = true;
+                    }
                 }
-                story.extend_paragraph(new_pieces);
+                if !new_pieces.is_empty() {
+                    story.extend_paragraph(new_pieces);
+                    update_right_sidebar = true;
+                }
+                if update_right_sidebar {
+                    self.right_sidebar.refresh_story();
+                }
             } else {
                 if !new_pieces.is_empty() {
                     // We received a piece of text but there is no active story.
@@ -648,13 +812,15 @@ impl App {
                     );
                 }
                 ui.heading("Welcome to Weave!");
-                ui.label("Create a new story or select an existing one.");
+                ui.label("Keyboard shortcuts:\n- `ESC` to start a new story or to access settings.\n- `F1` to toggle a view of the story's path as text.");
             }
         });
 
         if start_generation {
             if let Err(e) = self.start_generation() {
-                log::error!("Failed to start generation: {}", e);
+                self.errors.push(
+                    format!("Failed to start generation because: {}", e).into(),
+                );
             }
         }
     }
@@ -698,6 +864,7 @@ impl App {
                         // it to the story.
                         crate::drama_llama::Response::Predicted { piece } => {
                             new_pieces.push(piece);
+                            self.right_sidebar.refresh_story();
                         }
                         crate::drama_llama::Response::Done => {
                             // Trim whitespace from the end of the story. The
@@ -707,6 +874,7 @@ impl App {
                             // `drama_llama`
                             if let Some(story) = self.story_mut() {
                                 story.head_mut().trim_end_whitespace();
+                                self.right_sidebar.refresh_story();
                             }
                             // We can unlock the UI now.
                             self.generation_in_progress = false;
@@ -714,11 +882,11 @@ impl App {
                         crate::drama_llama::Response::Busy { request } => {
                             // This might happen because of data races, but really
                             // shouldn't.
-                            // TODO: gui error message
-                            log::error!(
+                            // TODO: make a macro for all these error messages.
+                            self.errors.push(format!(
                                 "Unexpected request sent to worker. Report this please: {:?}",
                                 request
-                            )
+                            ).into());
                         }
                     },
                     None => {
@@ -746,12 +914,15 @@ impl App {
                         self.generation_in_progress = false;
                     }
                     crate::openai::Response::Busy { request } => {
-                        log::error!(
+                        self.errors.push(format!(
                                 "Unexpected request sent to worker. Report this please: {:?}",
                                 request
-                            )
+                            ).into());
                     }
                     crate::openai::Response::Models { models } => {
+                        // The worker is done fetching models. We can update the
+                        // settings now.
+
                         // because conditional compilation
                         #[allow(irrefutable_let_patterns)]
                         if let settings::BackendOptions::OpenAI { settings } =
@@ -770,6 +941,22 @@ impl App {
             _ => {}
         }
     }
+
+    /// Handle input events (keyboard shortcuts, etc).
+    pub fn handle_input(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        _frame: &mut eframe::Frame,
+    ) {
+        ctx.input(|input| {
+            if input.key_pressed(egui::Key::Escape) {
+                self.left_sidebar.visible = !self.left_sidebar.visible;
+            }
+            if input.key_pressed(egui::Key::F1) {
+                self.right_sidebar.visible = !self.right_sidebar.visible;
+            }
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -778,11 +965,13 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        if self.draw_error_message(ctx, None) {
+        self.handle_input(ctx, frame);
+        if self.draw_error_messages(ctx) {
             // An error message is displayed. We skip the rest of the UI.
             return;
         }
-        self.draw_sidebar(ctx, frame);
+        self.draw_left_sidebar(ctx, frame);
+        self.draw_right_sidebar(ctx, frame);
         self.draw_central_panel(ctx, frame);
     }
 

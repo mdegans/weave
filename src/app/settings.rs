@@ -45,6 +45,18 @@ impl GenerativeBackend {
     } else {
         Self::ALL[0]
     };
+
+    pub fn supports_model_view(&self) -> bool {
+        match self {
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            GenerativeBackend::DramaLlama => true,
+            // We don't actually know how the OpenAI model is prompted since we
+            // feed it messages, not raw text. We could make a good educated
+            // guess, but it's not worth it right now.
+            #[cfg(feature = "openai")]
+            GenerativeBackend::OpenAI => false,
+        }
+    }
 }
 
 #[cfg(feature = "generate")]
@@ -128,6 +140,7 @@ impl BackendOptions {
         }
     }
 
+    #[cfg(feature = "openai")]
     pub fn as_openai(&self) -> Option<&crate::openai::Settings> {
         match self {
             BackendOptions::OpenAI { settings } => Some(settings),
@@ -197,6 +210,8 @@ pub enum Action {
         /// This backend should be started.
         to: GenerativeBackend,
     },
+    #[cfg(feature = "openai")]
+    OpenAI(crate::openai::SettingsAction),
 }
 
 impl Settings {
@@ -245,29 +260,33 @@ impl Settings {
         )
         .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
 
-        ui.label("Generative backend:");
-        egui::ComboBox::from_label("Backend")
-            .selected_text(self.selected_generative_backend.to_string())
-            .show_ui(ui, |ui| {
-                for &backend in GenerativeBackend::ALL {
-                    let active: bool =
-                        self.selected_generative_backend == *backend;
+        // If there is only one backend, don't show the dropdown.
+        if GenerativeBackend::ALL.len() > 1 {
+            // allow the user to switch backends
+            ui.label("Generative backend:");
+            egui::ComboBox::from_label("Backend")
+                .selected_text(self.selected_generative_backend.to_string())
+                .show_ui(ui, |ui| {
+                    for &backend in GenerativeBackend::ALL {
+                        let active: bool =
+                            self.selected_generative_backend == *backend;
 
-                    if ui
-                        .selectable_label(active, backend.to_string())
-                        .clicked()
-                    {
-                        ret = Some(Action::SwitchBackends {
-                            from: self.selected_generative_backend,
-                            to: *backend,
-                        });
+                        if ui
+                            .selectable_label(active, backend.to_string())
+                            .clicked()
+                        {
+                            ret = Some(Action::SwitchBackends {
+                                from: self.selected_generative_backend,
+                                to: *backend,
+                            });
 
-                        // We don't immediately switch the backend because we
-                        // want to clean up first. The `App` will switch the
-                        // `selected_generative_backend` after the cleanup.
+                            // We don't immediately switch the backend because we
+                            // want to clean up first. The `App` will switch the
+                            // `selected_generative_backend` after the cleanup.
+                        }
                     }
-                }
-            });
+                });
+        }
 
         match self.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
@@ -406,7 +425,6 @@ impl Settings {
 
                     if let Some(i) = remove {
                         predict_options.stop_strings.remove(i);
-                        remove = None;
                     }
 
                     if ui.button("Add stop string").clicked() {
@@ -419,7 +437,9 @@ impl Settings {
             }
             #[cfg(feature = "openai")]
             BackendOptions::OpenAI { settings } => {
-                settings.ui(ui);
+                if let Some(action) = settings.draw(ui) {
+                    ret = Some(Action::OpenAI(action));
+                }
             }
 
             #[allow(unreachable_patterns)] // because same as above

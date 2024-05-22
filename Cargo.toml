@@ -21,26 +21,37 @@ icon = [
     # "resources/icon.32@2x.png",
     # "resources/icon.64.png",
     # "resources/icon.64@2x.png",
-    # "resources/icon.128.png",
-    # "resources/icon.128@2x.png",
+    "resources/icon.128.png",
+    "resources/icon.128@2x.png",
     "resources/icon.256.png",
-    # "resources/icon.256@2x.png",
+    "resources/icon.256@2x.png",
     "resources/icon.512.png",
     "resources/icon.512@2x.png",
     # "resources/icon.1024.png",
 ]
 
+# For release, we optimize for size and use lto.
+[profile.release]
+lto = true
+panic = "abort"
+strip = true
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 egui = { version = "0.27", features = ["persistence"], optional = true }
-eframe = { version = "0.27", features = ["persistence"], optional = true }
+eframe = { version = "0.27", features = [
+    "persistence",
+    "wgpu",
+], optional = true }
 egui_file = { version = "0.17.0", optional = true }
 derive_more = "0.99.17"
 serde_json = "1.0"
 log = "0.4"
 env_logger = "0.11"
 static_assertions = "1.1"
+thiserror = "1.0"
 uuid = { version = "1.8", features = ["v4", "fast-rng"] }
+derivative = "2.2.0"
 
 tokio = { version = "1", optional = true }
 futures = { version = "0.3", features = ["executor"], optional = true }

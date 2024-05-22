@@ -10,14 +10,12 @@
 pub mod app;
 
 /// OpenAI generative [`Worker`]. [`Request`]s are sent to the worker and
-/// [`Response`]s are received. This can be used to run tasks in the background
-/// and are not tied to any specific frontend.
+/// [`Response`]s are received.
 #[cfg(feature = "openai")]
 pub(crate) mod openai;
 
 /// [`drama_llama`] generative [`Worker`]. [`Request`]s are sent to the worker
-/// and [`Response`]s are received. This can be used to run tasks in the
-/// background and are not tied to any specific frontend.
+/// and [`Response`]s are received.
 #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
 pub(crate) mod drama_llama;
 

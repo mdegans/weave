@@ -55,7 +55,7 @@ impl Into<openai_rust::chat::ChatArguments> for ChatArguments {
 }
 
 impl ChatArguments {
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
         // `model` is set by the parent `Settings` struct, since it has the
         // available choices. We don't draw it here.
 
@@ -297,6 +297,13 @@ where
     }
 }
 
+/// When calling [`Settings::draw`], this action determines what the caller
+/// should do.
+pub enum SettingsAction {
+    /// The caller should call [`Worker::fetch_models`].
+    FetchModels,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// Available models, if available from the OpenAI API. We don't want to
@@ -368,26 +375,21 @@ impl Settings {
         Ok(())
     }
 
+    /// Draw the settings UI. If the caller needs to perform any action,
+    /// `Some(action)` will be returned and should be acted upon.
     #[cfg(feature = "gui")]
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn draw(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        let mut action = None;
+
         if self.models.is_empty() {
             if ui.button("Fetch models").clicked() {
-                // TODO: Somehow we need to send a message to our worker to
-                // fetch the models and then get them back from a channel. This
-                // is some work but we need to wrap the async stuff in it's own
-                // thread because egui itself is not async. So we'll start an
-                // executor in a worker and do like we do with `drama_llama`.
-                // Alternatively we could just block the main thread and do it
-                // on startup with futures::executor::block_on.
-
-                // FIXME: This is blocking. We do have a way of sending a
-                // request to the worker to fetch the models, but it's on the
-                // parent struct, so we'll need to return some kind of request
-                // from here to the parent to tell it to fetch the models. Then
-                // when the models are ready, they're sent back to the main
-                // thread and all is well with no blocking. But this is fine
-                // for now.
-                self.fetch_models_sync(None).ok();
+                // We can't use async here, but we can do old-fashioned 
+                // non-blocking code to achieve the same effect. This will tell
+                // the caller to send a request to the worker to fetch the
+                // models. That fetch happens in a worker thread. When it's
+                // done, the worker will notify the main thread and the models
+                // will be updated. Very roundabout but avoids a UI hang.
+                action = Some(SettingsAction::FetchModels);
             }
         } else {
             // We display a dropdown for the models and let the user select one.
@@ -415,7 +417,9 @@ impl Settings {
                 .hint_text("OpenAI API key"),
         );
 
-        self.chat_arguments.ui(ui)
+        self.chat_arguments.draw(ui);
+
+        action
     }
 }
 
@@ -738,6 +742,18 @@ impl Worker {
     /// Returns true if the worker thread is alive.
     pub fn is_alive(&self) -> bool {
         self.handle.is_some()
+    }
+
+    pub fn fetch_models(&mut self) -> Result<(), futures::channel::mpsc::TrySendError<Request>> {
+        if !self.is_alive() {
+            panic!("Worker is not alive. Can't fetch models.");
+        }
+
+        if let Some(to_worker) = self.to_worker.as_mut() {
+            to_worker.try_send(Request::FetchModels)?;
+        }
+
+        Ok(())
     }
 
     /// Start prediction. Returns any SendError that occurs. This does not block

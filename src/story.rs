@@ -145,10 +145,8 @@ impl Story {
     ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
 
-        ui.label(self.to_string());
-
         // Draw, and update active path if changed.
-        if let Some(PathAction { path, action }) = self.root.draw(
+        if let Some(PathAction { path, mut action }) = self.root.draw(
             ui,
             self.active_path.as_ref().map(|v| v.as_slice()),
             lock_topology,
@@ -160,6 +158,7 @@ impl Story {
             if action.delete {
                 // We can handle this here.
                 self.decapitate();
+                action.modified = true;
                 return None;
             } else if action.generate.is_some() | action.continue_ {
                 return Some(action);
