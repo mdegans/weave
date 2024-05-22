@@ -1,8 +1,10 @@
 [package]
 name = "weave"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 description = "A tool for collaborative generative writing."
+license-file = "LICENSE.md"
+repository = "https://github.com/mdegans/weave"
 
 [package.metadata.bundle]
 name = "Weave"
@@ -29,6 +31,9 @@ icon = [
     "resources/icon.512@2x.png",
     # "resources/icon.1024.png",
 ]
+
+[package.metadata.docs.rs]
+features = ["gui"]
 
 # For release, we optimize for size and use lto.
 [profile.release]
@@ -70,7 +75,7 @@ drama_llama = { version = "0.3", optional = true }
 
 
 [features]
-default = []
+default = ["gui", "drama_llama", "openai"]
 generate = []
 
 drama_llama = [
