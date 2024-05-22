@@ -43,7 +43,7 @@ jobs:
         id: create_release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
         with:
           tag_name: ${{ github.sha }}
           release_name: Release ${{ github.sha }}
@@ -52,7 +52,7 @@ jobs:
       - name: Upload macOS release bundle
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: target/release/bundle/osx/Weave.app
@@ -66,6 +66,8 @@ jobs:
         run: sudo apt-get install llvm
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
+      - name: Install CUDA
+        run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
@@ -76,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Install CUDA
+        run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
       - name: Install cargo bundle
         run: cargo install cargo-bundle
       - name: Build Linux binary
@@ -90,7 +94,7 @@ jobs:
         id: create_release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
         with:
           tag_name: ${{ github.sha }}
           release_name: Release ${{ github.sha }}
@@ -99,7 +103,7 @@ jobs:
       - name: Upload Linux release bundle
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: target/release/bundle/linux/Weave
