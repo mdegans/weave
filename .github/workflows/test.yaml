@@ -29,7 +29,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
   linux-test:
@@ -55,7 +55,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
   windows-test:
@@ -79,6 +79,6 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
