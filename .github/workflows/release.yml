@@ -34,7 +34,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Install cargo bundle
@@ -74,7 +74,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Install cargo bundle
@@ -101,6 +101,12 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+      - name: Installe Cuda Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.15
       - name: Run cargo check
         uses: actions-rs/cargo@v1
         with:
@@ -112,7 +118,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v4.4.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Install cargo bundle
@@ -224,41 +230,51 @@ jobs:
                   echo "No PRs found for package $package_name"
               fi
           done
-  publish-binaries:
-    name: Publish binaries to GitHub
-    needs: [release-plz]
+  publish-mac:
+    name: Publish Mac binary to GitHub
+    needs: [mac-test]
     runs-on: ubuntu-latest
     steps:
       - name: Download Mac App
         uses: actions/download-artifact@v4
         with:
           name: mac-app
-          path: target/release/bundle/osx/
-      - name: Download Linux Binary
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-binary
-          path: target/release/bundle/linux/
-      - name: Download Windows Binary
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-exe
-          path: target/release/bundle/windows/Weave.exe
+          path: target/release/bundle/osx/Weave.tar.gz
       - name: Publish Mac App
         uses: softprops/action-gh-release@v2.0.5
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/bundle/osx/
+          files: target/release/bundle/osx/Weave.tar.gz
           token: ${{ secrets.PAT }}
-      - name: Publish Linux Binary
+  publish-linux:
+    name: Publish Linux binary to GitHub
+    needs: [linux-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: target/release/bundle/linux/Weave.tar.gz
+      - name: Publish Linux binary
         uses: softprops/action-gh-release@v2.0.5
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/bundle/linux/Weave
+          files: target/release/bundle/linux/Weave.tar.gz
           token: ${{ secrets.PAT }}
-      - name: Publish Windows Binary
+  publish-windows:
+    name: Publish Windows binary to GitHub
+    needs: [windows-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: target/release/bundle/windows/
+      - name: Publish Windows binary
         uses: softprops/action-gh-release@v2.0.5
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/bundle/windows/Weave.exe
+          files: target/release/bundle/windows/
           token: ${{ secrets.PAT }}
