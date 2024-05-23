@@ -52,17 +52,16 @@ jobs:
           compression-level: 9
           overwrite: true
   linux-test:
-    runs-on: ubuntu-latest
+    # It builds on my machine which is mantic until i `do-release-upgrade`
+    # so let's try mantic.
+    runs-on: ubuntu-mantic
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          # Nightly is required by `wayland-backend` because:
-          # error[E0554]: `#![feature]` may not be used on the stable release channel
-          # Error:   --> /home/runner/.cargo/registry/src/index.crates.io-6f17d22bba15001f/wayland-backend-0.3.3/src/lib.rs:46:23
-          toolchain: nightly
+          toolchain: stable
           components: rustfmt, clippy
       - name: Install CUDA
         run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
@@ -90,7 +89,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-binary
-          path: target/release/bundle/linux/Weave.tar.gz
+          # This will be a problem since the path includes the version and we
+          # don't know that until release runs. So the release build will have
+          # to happen after `release-plz` runs. But for now let's test this.
+          path: target/release/bundle/deb/weave_0.0.0_amd64.deb
           if-no-files-found: error
           compression-level: 9
           overwrite: true
@@ -263,7 +265,7 @@ jobs:
         uses: softprops/action-gh-release@v2.0.5
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/bundle/linux/Weave.tar.gz
+          files: target/release/bundle/deb/weave_0.0.0_amd64.deb
           token: ${{ secrets.PAT }}
   publish-windows:
     name: Publish Windows binary to GitHub
