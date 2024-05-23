@@ -1,0 +1,100 @@
+[package]
+name = "weave-writer"
+version = "0.0.0"
+edition = "2021"
+description = "A tool for collaborative generative writing."
+license-file = "LICENSE.md"
+repository = "https://github.com/mdegans/weave"
+
+[package.metadata.bundle]
+name = "Weave"
+identifier = "dev.mdegans.weave"
+resources = ["resources"]
+copyright = "2024, Michael de Gans"
+category = "public.app-category.productivity"
+long_description = """
+A tool for collaborative generative writing. It supports multiple generative
+backends such as OpenAI and LLaMA. Stories can branch, allowing for multiple
+paths through a story. It is designed to be used by writers, game developers,
+or anyone who needs to generate text.
+"""
+icon = [
+    # "resources/icon.32.png",
+    # "resources/icon.32@2x.png",
+    # "resources/icon.64.png",
+    # "resources/icon.64@2x.png",
+    "resources/icon.128.png",
+    "resources/icon.128@2x.png",
+    "resources/icon.256.png",
+    "resources/icon.256@2x.png",
+    "resources/icon.512.png",
+    "resources/icon.512@2x.png",
+    # "resources/icon.1024.png",
+]
+
+[package.metadata.docs.rs]
+features = ["gui"]
+
+# For release, we optimize for size and use lto.
+[profile.release]
+lto = true
+panic = "abort"
+strip = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+egui = { version = "0.27", features = ["persistence"], optional = true }
+eframe = { version = "0.27", features = [
+    "persistence",
+    "wgpu",
+], optional = true }
+egui_file = { version = "0.17.0", optional = true }
+derive_more = "0.99.17"
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+static_assertions = "1.1"
+thiserror = "1.0"
+uuid = { version = "1.8", features = ["v4", "fast-rng"] }
+derivative = "2.2.0"
+
+tokio = { version = "1", optional = true }
+futures = { version = "0.3", features = ["executor"], optional = true }
+keyring = { version = "2", optional = true }
+
+ollama-rs = { version = "0.1.9", optional = true }
+openai-rust = { version = "1.5", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+# This will fail on very old GPUs, but those will be slow for inference anyway.
+# If people want support for very old GPUs replace `cuda_f16` with `cuda`.
+drama_llama = { version = "0.3", optional = true, features = ["cuda_f16"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "linux")))'.dependencies]
+drama_llama = { version = "0.3", optional = true }
+
+
+[features]
+default = ["gui", "drama_llama", "openai"]
+generate = []
+
+drama_llama = [
+    "generate",
+    "dep:drama_llama",
+    "drama_llama/serde",
+    "drama_llama/cli",
+    "dep:egui_file",
+]
+openai = [
+    "generate",
+    "dep:openai-rust",
+    "dep:futures",
+    "dep:keyring",
+    "dep:tokio",
+    "tokio/rt-multi-thread",
+]
+ollama = ["generate", "dep:ollama-rs"]
+# TODO: Claude does not yet have a good rust library. Will have to use reqwests
+# for the feature.
+
+gui = ["egui", "eframe"]
