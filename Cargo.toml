@@ -1,6 +1,6 @@
 [package]
 name = "weave-writer"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2021"
 description = "A tool for collaborative generative writing."
 license-file = "LICENSE.md"
