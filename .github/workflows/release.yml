@@ -59,7 +59,10 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          # Nightly is required by `wayland-backend` because:
+          # error[E0554]: `#![feature]` may not be used on the stable release channel
+          # Error:   --> /home/runner/.cargo/registry/src/index.crates.io-6f17d22bba15001f/wayland-backend-0.3.3/src/lib.rs:46:23
+          toolchain: nightly
           components: rustfmt, clippy
       - name: Install CUDA
         run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
