@@ -219,12 +219,12 @@ impl Default for ChatArguments {
                     .to_string(),
             }],
             temperature: None,
-            top_p: None,
+            top_p: Some(0.75),
             n: None,
             stop: None,
-            max_tokens: None,
-            presence_penalty: None,
-            frequency_penalty: None,
+            max_tokens: Some(1024),
+            presence_penalty: Some(0.5),
+            frequency_penalty: Some(0.5),
             user: None,
         }
     }
