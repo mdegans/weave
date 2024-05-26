@@ -235,6 +235,8 @@ impl Settings {
     ) -> Option<Action> {
         let mut ret = None;
 
+        // Choose generative backend
+
         // FIXME: This doesn't display because the backend switch is blocking
         // and by the time the UI is drawn, the backend has already switched.
         // Not sure how to fix this easily.
@@ -244,9 +246,6 @@ impl Settings {
                 backend
             ));
         }
-
-        // Choose generative backend
-        use std::num::NonZeroU128;
 
         ui.checkbox(
             &mut self.prompt_include_authors,
