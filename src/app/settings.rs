@@ -235,6 +235,8 @@ impl Settings {
     ) -> Option<Action> {
         let mut ret = None;
 
+        // Choose generative backend
+
         // FIXME: This doesn't display because the backend switch is blocking
         // and by the time the UI is drawn, the backend has already switched.
         // Not sure how to fix this easily.
@@ -244,9 +246,6 @@ impl Settings {
                 backend
             ));
         }
-
-        // Choose generative backend
-        use std::num::NonZeroU128;
 
         ui.checkbox(
             &mut self.prompt_include_authors,
@@ -298,8 +297,6 @@ impl Settings {
                 file_dialog,
                 max_context_size,
             } => {
-                use drama_llama::PredictOptions;
-
                 // Choose model
                 ui.label(format!("Model: {:?}", model));
                 if ui.button("Change model").clicked() {
@@ -332,51 +329,8 @@ impl Settings {
 
                 // Prediction options
 
-                // FIXME: Figure out how to get the tooltip to show up for the
-                // `horizontal_wrapped` widget. The docs say "The returned
-                // Response will only have checked for mouse hover but can be
-                // used for tooltips (on_hover_text)" but this doesn't appear to
-                // work or I'm holding it wrong.
-
-                // context window size
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Context:").on_hover_text_at_pointer("The total number of tokens in the context window. This includes the prompt and the generated text. The limit is set by the model. In general, set this as high as your model and memory can handle.");
-
-                    let mut n = predict_options.n.get().min(*max_context_size).max(1);
-                    ui.add(
-                        egui::widgets::DragValue::new(&mut n)
-                            .clamp_range(1..=*max_context_size),
-                    );
-                    // The min and max is necessary because the widget doesn't
-                    // actually clamp the value correctly. If one drags the
-                    // value all the way to the left, it will set n to 0 :/
-                    predict_options.n = n.min(*max_context_size).max(256).try_into().unwrap();
-                });
-
-                // Random seed
-                ui.horizontal_wrapped(|ui| {
-                    let mut random = predict_options.seed.is_none();
-                    ui.toggle_value(&mut random, "Random seed").on_hover_text_at_pointer("Use a random seed for predictions. Click to set a specific seed.");
-                    predict_options.seed = if random {
-                        None
-                    } else {
-                        // unwrap cannot panic because we already checked for None
-                        // FIXME: were truncating here. This isn't great, but
-                        // the widget doesn't support u128.
-                        let mut seed: u64 =
-                            predict_options.seed.unwrap_or(PredictOptions::DEFAULT_SEED).get()
-                                as u64;
-                        ui.add(
-                            egui::widgets::DragValue::new(&mut seed)
-                                .clamp_range(1..=std::usize::MAX),
-                        );
-
-                        Some(NonZeroU128::try_from(seed as u128).unwrap())
-                    };
-                });
-
                 // Stop criteria
-                ui.vertical(|ui|{
+                ui.vertical(|ui| {
                     // Because the text edit field escapes special characters,
                     // we'll include a few toggle buttons for common ones and
                     // put them at the top of the list.
@@ -384,56 +338,40 @@ impl Settings {
                     ui.label("Stop at:");
                     let mut skip = 0;
                     ui.horizontal(|ui| {
-                        let mut skipping_newline = if !predict_options.stop_strings.is_empty() {
-                            if predict_options.stop_strings[0] == "\n" {
-                                skip += 1;
-                                true
+                        let mut skipping_newline =
+                            if !predict_options.stop_strings.is_empty() {
+                                if predict_options.stop_strings[0] == "\n" {
+                                    skip += 1;
+                                    true
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
-                            }
-                        } else {
-                            false
-                        };
+                            };
 
-                        if ui.toggle_value(&mut skipping_newline, "Newline").clicked() {
+                        if ui
+                            .toggle_value(&mut skipping_newline, "Newline")
+                            .clicked()
+                        {
                             if skipping_newline {
                                 skip += 1;
-                                if let Some(s) = predict_options.stop_strings.get(0) {
+                                if let Some(s) =
+                                    predict_options.stop_strings.get(0)
+                                {
                                     debug_assert!(s != "\n")
                                 }
-                                predict_options.stop_strings.insert(0, "\n".to_string());
+                                predict_options
+                                    .stop_strings
+                                    .insert(0, "\n".to_string());
                             } else {
                                 predict_options.stop_strings.remove(0);
                             }
                         }
                     });
 
-                    ui.label("Stop strings:").on_hover_text_at_pointer("Stop generating when any of these strings are predicted. Note that escape sequences are not currently supported.");
-
-                    let mut remove = None;
-
-                    for (i, stop) in predict_options.stop_strings.iter_mut().enumerate().skip(skip) {
-                        ui.horizontal_wrapped(|ui| {
-                            // This escapes special characters, which is not
-                            // what we want. bluh.
-                            ui.text_edit_singleline(stop);
-                            if ui.button("X").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                    }
-
-                    if let Some(i) = remove {
-                        predict_options.stop_strings.remove(i);
-                    }
-
-                    if ui.button("Add stop string").clicked() {
-                        predict_options.stop_strings.push(Default::default());
-                    }
+                    predict_options.draw_inner(ui);
                 });
-
-                // TODO: Add ui for options. This is perhaps better done in
-                // the drama_llama crate.
             }
             #[cfg(feature = "openai")]
             BackendOptions::OpenAI { settings } => {
