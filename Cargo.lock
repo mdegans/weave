@@ -1359,9 +1359,9 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "drama_llama"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9951a0451c6f1ad3dbc346d601ce2b10b5266ef8ff023d9ded81e799ee286eb"
+checksum = "0136ea24627c6685c785b5d4d30990e5ae87f87735e94fcea36ced4810a7d209"
 dependencies = [
  "clap",
  "derive_more",
