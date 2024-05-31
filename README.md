@@ -13,19 +13,15 @@ Weave is a "multiversal" generative tree writing tool akin to [`loom`](https://g
 
 Notable features:
 
-- **Live switching of backends** - It's possible to generate part of a story
+- **Live switching of backends** - Generate part of a story
   with OpenAI and another part with LLaMA -- all without restarting the app.
-- **Streaming responses** - It's possible to cancel generations in progress --
+- **Streaming responses** - Cancel generations in progress --
   both local and online.
-- **Live editing** - It's possible to edit posts during generation, but not to
-  add or remove nodes, so you need not wait for generation to complete to tweak
-  the text to your liking. New tokens are always appended to the end.
+- **Live editing** - Edit posts during generation. New tokens are always appended to the end.
+- **Advanced sampling controls** - For local language models. Use any sampling methods in any order.
 
 Coming soon:
 
-- Fine-grained support over sampling for local models and potentially remote as
-  well for backends returning logprobs. The backend code is already written in
-  `drama_llama` but this is not exposed.
 - Keyboard shortcuts.
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
@@ -46,7 +42,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   - 🔲 'Visited' state
 - ☑️ Generation
   - 🔲 Generate N children with various models (currently one a time).
-  - ☑️ Modify generation settings (Complete for OpenAI but not yet from LLaMA)
+  - ✅ Modify generation settings (Complete for OpenAI but not yet from LLaMA)
 - ☑️ File I/O
   - ✅ Serializable application state, including stories, to JSON.
   - ✅ Open/save trees as JSON files
@@ -69,9 +65,3 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
   but not easily and not cleanly. When it is resolved the central panel will be
   split into story and node views.
-- The `drama_llama` backend will crash if the model's output is not valid
-  unicode. This will be fixed. If this happens, go to settings, switch backends,
-  and then switch back `drama_llama`.
-- The BOS token is not added for the `drama_llama` backend. This will be added
-  as an option and enabled by default since most models expect it. Generation
-  will still work but the quality may be affected.
