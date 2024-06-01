@@ -51,10 +51,6 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 
 # Notable issues
 
-- On some platforms (like MacOS) the Weave icon will change to an `e` shortly
-  after launch. See [this
-  issue](https://github.com/emilk/egui/issues/3823#issuecomment-1892423108) for
-  details.
 - With each new generation, all tokens need to be injested again with most
   backends. This is solvable with `drama_llama` (longest prefix cache) but not
   for the OpenAI API. So for OpenAI, it's recommended to generate larger posts.
