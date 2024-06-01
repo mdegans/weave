@@ -42,7 +42,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   - 🔲 'Visited' state
 - ☑️ Generation
   - 🔲 Generate N children with various models (currently one a time).
-  - ✅ Modify generation settings (Complete for OpenAI but not yet from LLaMA)
+  - ✅ Modify generation settings (Complete for OpenAI and mostly for local)
 - ☑️ File I/O
   - ✅ Serializable application state, including stories, to JSON.
   - ✅ Open/save trees as JSON files
