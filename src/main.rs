@@ -21,11 +21,13 @@ fn load_icon() -> std::sync::Arc<IconData> {
     // // write raw to file. then we can remove dependency on image
     // const RAW_ICON_FILENAME: &str = "resources/icon.512.raw";
     // std::fs::write(RAW_ICON_FILENAME, &raw).unwrap();
+    const BYTES: &[u8] = include_bytes!("../resources/icon.512.raw");
+    static_assertions::const_assert_eq!(BYTES.len(), 512 * 512 * 4);
 
     IconData {
         width: 512,
         height: 512,
-        rgba: include_bytes!("../resources/icon.512.raw").to_vec(),
+        rgba: BYTES.to_vec(),
     }
     .into()
 }
