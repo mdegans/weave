@@ -9,6 +9,17 @@ Weave is a "multiversal" generative tree writing tool akin to [`loom`](https://g
   - ✅ Shim for GPT 3.5+ chat completions API, including GPT 4o.
 - 🔲 Anthropic models
 
+## Installation
+
+- **Download** a release from the [releases page](https://github.com/mdegans/weave/releases) and extract it.
+- For **macOS and Linux** installation will be straighforward with an `.app` and a Debian package containing a static binary.
+- For Windows, a release is not yet provided but it will probably build for `openai` with `cargo build --release --features="openai,gui"`. LLaMA will require a bit more work to build on Windows.
+
+## Usage
+
+- [llama](resources/LLAMA_HELP.md)
+- [openai](resources/OPENAI_HELP.md)
+
 ## Features
 
 Notable features:
