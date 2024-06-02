@@ -247,18 +247,6 @@ impl Settings {
             ));
         }
 
-        ui.checkbox(
-            &mut self.prompt_include_authors,
-            "Include author in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
-
-        ui.checkbox(
-            &mut self.prompt_include_title,
-            "Include title in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
-
         // If there is only one backend, don't show the dropdown.
         if GenerativeBackend::ALL.len() > 1 {
             // allow the user to switch backends
@@ -285,6 +273,27 @@ impl Settings {
                         }
                     }
                 });
+        }
+
+        // Show the author and title options if the backend supports it. This is
+        // outside the match below because two mutable borrows of self are not
+        // allowed.
+        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+        if matches!(
+            self.selected_generative_backend,
+            GenerativeBackend::DramaLlama
+        ) {
+            ui.checkbox(
+                    &mut self.prompt_include_authors,
+                    "Include author in prompt sent to model.",
+                )
+                .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
+
+            ui.checkbox(
+                    &mut self.prompt_include_title,
+                    "Include title in prompt sent to model.",
+                )
+                .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
         }
 
         match self.backend_options() {
