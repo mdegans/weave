@@ -2,7 +2,10 @@ mod settings;
 
 use {
     self::settings::{BackendOptions, Settings},
-    crate::story::Story,
+    crate::{
+        node::Action,
+        story::{DrawMode, Story},
+    },
 };
 
 #[derive(Default, PartialEq, derive_more::Display)]
@@ -20,12 +23,29 @@ struct LeftSidebar {
     pub visible: bool,
 }
 
+#[derive(Default, PartialEq)]
+pub enum RightSidebarPage {
+    #[default]
+    Text,
+    Tree,
+}
+
+impl RightSidebarPage {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Text => "Text",
+            Self::Tree => "Tree",
+        }
+    }
+}
+
 #[derive(Default)]
 struct RightSidebar {
     pub text: Option<String>,
     pub text_current: bool,
     pub visible: bool,
     pub model_view: bool,
+    pub page: RightSidebarPage,
 }
 
 impl RightSidebar {
@@ -388,8 +408,12 @@ impl App {
                 // replace the sidebar with generation controls.
                 #[cfg(feature = "generate")]
                 if self.generation_in_progress {
-                    ui.heading("Generating...");
-                    if ui.button("Stop").clicked() {
+                    ui.heading("Generating...").on_hover_text_at_pointer(
+                        "This might take a while the first time, especially with large local models."
+                    );
+                    if ui.button("Stop")
+                        .on_hover_text_at_pointer("Stop generation. This might take a moment if the models is still being loaded.")
+                        .clicked() {
                         #[cfg(all(
                             feature = "drama_llama",
                             not(target_arch = "wasm32")
@@ -456,12 +480,29 @@ impl App {
             .default_width(200.0)
             .resizable(true)
             .show_animated(ctx, self.right_sidebar.visible, |ui| {
-                if self
-                    .settings
-                    .selected_generative_backend
-                    .supports_model_view()
-                {
-                    if ui
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.right_sidebar.page,
+                        RightSidebarPage::Text,
+                        "As Text",
+                    );
+                    ui.selectable_value(
+                        &mut self.right_sidebar.page,
+                        RightSidebarPage::Tree,
+                        "As Tree",
+                    );
+                });
+
+                ui.heading(self.right_sidebar.page.as_str());
+
+                match self.right_sidebar.page {
+                    RightSidebarPage::Text => {
+                        if self
+                            .settings
+                            .selected_generative_backend
+                            .supports_model_view()
+                        {
+                            if ui
                         .checkbox(
                             &mut self.right_sidebar.model_view,
                             "model view",
@@ -473,35 +514,53 @@ impl App {
                     {
                         self.right_sidebar.refresh_story();
                     }
+                        }
+
+                        let include_authors = if self.right_sidebar.model_view {
+                            self.settings.prompt_include_authors
+                        } else {
+                            true
+                        };
+                        let include_title = if self.right_sidebar.model_view {
+                            self.settings.prompt_include_title
+                        } else {
+                            true
+                        };
+
+                        if !self.right_sidebar.text_current {
+                            // We need to shuffle the text around a bit. We do this
+                            // because mutable references, and to avoid reallocation
+                            let mut text = self
+                                .right_sidebar
+                                .text
+                                .take()
+                                .unwrap_or(String::new());
+                            text.clear();
+                            self.story()
+                                .unwrap()
+                                .format_full(
+                                    &mut text,
+                                    include_authors,
+                                    include_title,
+                                )
+                                .unwrap();
+                            self.right_sidebar.text = Some(text);
+                        }
+
+                        // We have some text to display because there is a story and
+                        // formatting cannot actually fail.
+                        ui.label(self.right_sidebar.text.as_ref().unwrap());
+                    }
+                    RightSidebarPage::Tree => {
+                        if let Some(story) = self.story_mut() {
+                            if let Some(action) =
+                                story.draw(ui, false, DrawMode::Tree)
+                            {
+                                self.handle_story_action(action);
+                            }
+                        }
+                    }
                 }
-
-                let include_authors = if self.right_sidebar.model_view {
-                    self.settings.prompt_include_authors
-                } else {
-                    true
-                };
-                let include_title = if self.right_sidebar.model_view {
-                    self.settings.prompt_include_title
-                } else {
-                    true
-                };
-
-                if !self.right_sidebar.text_current {
-                    // We need to shuffle the text around a bit. We do this
-                    // because mutable references, and to avoid reallocation
-                    let mut text =
-                        self.right_sidebar.text.take().unwrap_or(String::new());
-                    text.clear();
-                    self.story()
-                        .unwrap()
-                        .format_full(&mut text, include_authors, include_title)
-                        .unwrap();
-                    self.right_sidebar.text = Some(text);
-                }
-
-                // We have some text to display because there is a story and
-                // formatting cannot actually fail.
-                ui.label(self.right_sidebar.text.as_ref().unwrap());
             });
     }
 
@@ -757,9 +816,6 @@ impl App {
         ctx: &eframe::egui::Context,
         _frame: &mut eframe::Frame,
     ) {
-        // Because mutable references, we need to copy these flags.
-        let mut start_generation = false;
-
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut new_pieces = Vec::new();
 
@@ -784,22 +840,21 @@ impl App {
             let generation_in_progress = self.generation_in_progress;
             let mut update_right_sidebar = false;
             if let Some(story) = self.story_mut() {
-                // TODO: the response from story.draw could be more succinct. We
-                // only realy know if we need to start generation (for now).
-                if let Some(action) = story.draw(ui, generation_in_progress) {
-                    if action.continue_ | action.generate.is_some() {
-                        // The path has already been changed. We need only
-                        // start generation.
-                        start_generation = true;
-                    }
-                    if action.modified {
-                        update_right_sidebar = true;
-                    }
-                }
                 if !new_pieces.is_empty() {
                     story.extend_paragraph(new_pieces);
                     update_right_sidebar = true;
                 }
+
+                // TODO: the response from story.draw could be more succinct. We
+                // only realy know if we need to start generation (for now).
+                if let Some(action) = story.draw(
+                    ui,
+                    generation_in_progress,
+                    DrawMode::Nodes,
+                ) {
+                    self.handle_story_action(action)
+                }
+
                 if update_right_sidebar {
                     self.right_sidebar.refresh_story();
                 }
@@ -812,9 +867,24 @@ impl App {
                     );
                 }
                 ui.heading("Welcome to Weave!");
-                ui.label("Keyboard shortcuts:\n- `ESC` to start a new story or to access settings.\n- `F1` to toggle a view of the story's path as text.");
+                ui.label("Keyboard shortcuts:\n- `ESC` to start a new story or to access settings.\n- `F1` to toggle a view of the story as text or tree.");
             }
         });
+    }
+
+    /// Handle path action.
+    pub fn handle_story_action(&mut self, action: Action) {
+        let mut start_generation = false;
+        let mut update_right_sidebar = false;
+
+        if action.continue_ | action.generate.is_some() {
+            // The path has already been changed. We need only
+            // start generation.
+            start_generation = true;
+        }
+        if action.modified {
+            update_right_sidebar = true;
+        }
 
         if start_generation {
             if let Err(e) = self.start_generation() {
@@ -822,6 +892,10 @@ impl App {
                     format!("Failed to start generation because: {}", e).into(),
                 );
             }
+        }
+
+        if update_right_sidebar {
+            self.right_sidebar.refresh_story();
         }
     }
 

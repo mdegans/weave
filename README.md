@@ -39,7 +39,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 
 - ☑️ Read mode
   - ✅ Linear story view
-  - 🔲 Tree nav bar
+  - ✅ Tree nav bar
   - 🔲 Edit mode
 - ☑️ Tree view
   - ✅ Explore tree visually with mouse

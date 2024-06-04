@@ -10,6 +10,14 @@ pub enum AuthorID {
     ID(u8),
 }
 
+#[cfg(feature = "gui")]
+pub enum DrawMode {
+    /// Draw story as nodes, as usual.
+    Nodes,
+    /// Draw story as a collapsible tree.
+    Tree,
+}
+
 impl From<&str> for AuthorID {
     fn from(author: &str) -> Self {
         Self::String(author.to_string())
@@ -142,15 +150,16 @@ impl Story {
         &mut self,
         ui: &mut egui::Ui,
         lock_topology: bool,
+        mode: DrawMode,
     ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
 
+        let selected_path = self.active_path.as_ref().map(|v| v.as_slice());
+
         // Draw, and update active path if changed.
-        if let Some(PathAction { path, mut action }) = self.root.draw(
-            ui,
-            self.active_path.as_ref().map(|v| v.as_slice()),
-            lock_topology,
-        ) {
+        if let Some(PathAction { path, mut action }) =
+            self.root.draw(ui, selected_path, lock_topology, mode)
+        {
             self.active_path = Some(path);
             // FIXME: as it turns out all the actions are mutually exclusive,
             // so we can probably use an enum rather than a struct. The user can

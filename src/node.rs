@@ -267,12 +267,12 @@ impl<T> std::fmt::Display for Node<T> {
 }
 
 impl Node<Meta> {
-    /// Draw the tree. The active path is highlighted. If `lock_topology` is
-    /// true, the user cannot add or remove nodes.
-    /// 
+    /// Draw the tree as nodes. The active path is highlighted. If
+    /// `lock_topology` is true, the user cannot add or remove nodes.
+    ///
     /// Returns an action to perform at the path or None if no action is needed.
     #[cfg(feature = "gui")]
-    pub fn draw(
+    pub fn draw_nodes(
         &mut self,
         ui: &mut egui::Ui,
         active_path: Option<&[usize]>,
@@ -307,7 +307,9 @@ impl Node<Meta> {
             }
 
             // Draw the node and take any action in response to it's widgets.
-            if let Some(action) = node.draw_one(ui, highlight_node, lock_topology) {
+            if let Some(action) =
+                node.draw_one_node(ui, highlight_node, lock_topology)
+            {
                 if action.delete {
                     // How to delete a node? We're taking a reference to the
                     // node so we can't delete it here. We can delete the
@@ -360,9 +362,103 @@ impl Node<Meta> {
         ret
     }
 
+    /// Helper for draw functions to draw just the buttons.
+    #[cfg(feature = "gui")]
+    pub fn draw_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: &mut Option<Action>,
+    ) {
+        ui.horizontal(|ui| {
+            if ui
+                .button("Add Child")
+                .on_hover_text_at_pointer(
+                    "Add an empty child node."
+                )
+                .clicked() {
+                self.add_child(Node::default());
+            }
+            if ui
+                .button("Delete")
+                .on_hover_text_at_pointer(
+                    "Delete this node and all its children."
+                )
+                .clicked() {
+                // Tell caller to delete this node.
+                *action = Some(Action {
+                    delete: true,
+                    ..Default::default()
+                });
+            }
+            if ui
+                .button("Select")
+                .on_hover_text_at_pointer(
+                    "Set this node as the active node. The story will end or continue from this node."
+                )
+                .clicked() {
+                // Any action means selection.
+                *action = Some(Action::default());
+            }
+            // FIXME: The terminology here could be improved. These are
+            // confusing. We should find new names.
+            if ui
+                .button("Continue")
+                .on_hover_text_at_pointer(
+                    "Continue generating the current node.",
+                )
+                .clicked()
+            {
+                // Tell caller to continue generation on this node.
+                *action = Some(Action {
+                    continue_: true,
+                    ..Default::default()
+                });
+            }
+            if ui
+                .button("Generate")
+                .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
+                .clicked() {
+                // Tell caller to generate a new node.
+                *action = Some(
+                    Action {
+                        generate: Some(self.add_child(Node::default())),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+    }
+
+    /// Helper for draw functions to draw just the text edit.
+    #[cfg(feature = "gui")]
+    pub fn draw_text_edit(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: &mut Option<Action>,
+    ) {
+        // We can still allow editing the text during generation since
+        // the pieces are still appended to the end. There is no
+        // ownership issue because of the immediate mode GUI.
+        if ui.text_edit_multiline(&mut self.text).changed() {
+            // FIXME: We're clearing the pieces here, but we can handle
+            // this better.
+            self.pieces.clear();
+            self.pieces.push(Piece {
+                end: self.text.len(),
+            });
+            if let Some(action) = action {
+                action.modified = true;
+            } else {
+                let mut a = Action::default();
+                a.modified = true;
+                *action = Some(a);
+            }
+        }
+    }
+
     /// Draw just the node. Returns true if the node should be active.
     #[cfg(feature = "gui")]
-    pub fn draw_one(
+    pub fn draw_one_node(
         &mut self,
         ui: &mut egui::Ui,
         highlighted: bool,
@@ -385,94 +481,25 @@ impl Node<Meta> {
             .auto_sized()
             .frame(frame)
             .show(ui.ctx(), |ui| {
-
-                if !highlighted {
+                if highlighted {
+                    ui.set_opacity(1.5);
+                } else {
                     ui.set_opacity(0.5);
                 }
 
-
-                let mut response = None;
-                if !lock_topology {                
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("Add Child")
-                            .on_hover_text_at_pointer(
-                                "Add an empty child node."
-                            )
-                            .clicked() {
-                            self.add_child(Node::default());
-                        }
-                        if ui
-                            .button("Delete")
-                            .on_hover_text_at_pointer(
-                                "Delete this node and all its children."
-                            )
-                            .clicked() {
-                            // Tell caller to delete this node.
-                            *(&mut response) = Some(Action {
-                                delete: true,
-                                ..Default::default()
-                            });
-                        }
-                        if ui
-                            .button("Select")
-                            .on_hover_text_at_pointer(
-                                "Set this node as the active node. The story will end or continue from this node."
-                            )
-                            .clicked() {
-                            // Any action means selection.
-                            *(&mut response) = Some(Action::default());
-                        }
-                        // FIXME: The terminology here could be improved. These are
-                        // confusing. We should find new names.
-                        if ui
-                            .button("Continue")
-                            .on_hover_text_at_pointer(
-                                "Continue generating the current node.",
-                            )
-                            .clicked()
-                        {
-                            // Tell caller to continue generation on this node.
-                            *(&mut response) = Some(Action {
-                                continue_: true,
-                                ..Default::default()
-                            });
-                        }
-                        if ui
-                            .button("Generate")
-                            .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
-                            .clicked() {
-                            // Tell caller to generate a new node.
-                            *(&mut response) = Some(
-                                Action {
-                                    generate: Some(self.add_child(Node::default())),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    });
+                let mut action = None;
+                if !lock_topology {
+                    self.draw_buttons(ui, &mut action);
                 }
-                
+
                 // We can still allow editing the text during generation since
                 // the pieces are still appended to the end. There is no
-                // ownership issue because of the immediate mode GUI.
-                if ui.text_edit_multiline(&mut self.text).changed() {
-                    // FIXME: We're clearing the pieces here, but we can handle
-                    // this better.
-                    self.pieces.clear();
-                    self.pieces.push(Piece {
-                        end: self.text.len(),
-                    });
-                    response = match response {
-                        Some(mut action) => {
-                            action.modified = true;
-                            Some(action)
-                        }
-                        None => Some(Action { modified: true, ..Default::default() }),
-                    };
-                }
+                // ownership issue because of the immediate mode GUI and there
+                // are no topology changes so the new tokens are appended at the
+                // correct path.
+                self.draw_text_edit(ui, &mut action);
 
-                response
+                action
             });
 
         // If the window has been interacted with, we need to store the new size
@@ -491,6 +518,142 @@ impl Node<Meta> {
         } else {
             None
         }
+    }
+
+    /// Draw the tree.
+    #[cfg(feature = "gui")]
+    pub fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected_path: Option<&[usize]>,
+        lock_topology: bool,
+        mode: crate::story::DrawMode,
+    ) -> Option<PathAction> {
+        use crate::story::DrawMode;
+
+        match mode {
+            DrawMode::Nodes => {
+                self.draw_nodes(ui, selected_path, lock_topology)
+            }
+            DrawMode::Tree => {
+                let auto_collapse = ui
+                    .button("auto-collapse")
+                    .on_hover_text_at_pointer("Collapse all except selected.")
+                    .clicked();
+
+                egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        self.draw_tree(
+                            ui,
+                            selected_path,
+                            None, // current path (root is None)
+                            0,    // depth
+                            true, // selected
+                            auto_collapse,
+                            lock_topology,
+                        )
+                    })
+                    .inner
+            }
+        }
+    }
+
+    /// A helper function to draw the tree as collapsible headers.
+    ///
+    /// - `ui`: The egui context.
+    /// - `selected_path`: The selected path in the tree.
+    /// - `current_path`: The current path (of this node, hopefully).
+    /// - `depth`: The distance from the root.
+    /// - `selected`: Whether this node is selected.
+    /// - `auto_collapse`: Whether to auto-collapse nodes. If the node is
+    ///   selected, it will be opened, if not, it will be closed.
+    /// - `lock_topology`: Whether the topology is locked. Disables buttons
+    ///   that change topology. Editing text is still allowed.
+    #[cfg(feature = "gui")]
+    fn draw_tree(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected_path: Option<&[usize]>,
+        current_path: Option<Vec<usize>>,
+        depth: usize,
+        selected: bool,
+        auto_collapse: bool,
+        lock_topology: bool,
+    ) -> Option<PathAction> {
+        let title = self
+            .text
+            .chars()
+            .take(16)
+            .chain(std::iter::once('…'))
+            .collect::<String>();
+
+        let open = if selected {
+            Some(true)
+        } else {
+            if auto_collapse {
+                Some(false)
+            } else {
+                None
+            }
+        };
+
+        // This is a recursive implementation rather than using a stack like
+        // above because it suits the egui API better (nested elements). It's
+        // very unlikely that the depth of the tree will be so large that it
+        // will cause a stack overflow. It's also prettier and easier to
+        // understand.
+        egui::CollapsingHeader::new(title)
+            .default_open(open.unwrap_or(false))
+            .open(open)
+            .id_source(egui::Id::new(("tree", self.meta.id)))
+            .show(ui, |ui| {
+                let mut action: Option<Action> = None;
+                let mut path_action = None;
+
+                if selected {
+                    ui.set_opacity(1.0);
+                } else {
+                    ui.set_opacity(0.5);
+                }
+
+                // Draw buttons
+                if !lock_topology {
+                    self.draw_buttons(ui, &mut action)
+                }
+
+                // Draw text edit
+                self.draw_text_edit(ui, &mut action);
+
+                for (i, child) in self.children.iter_mut().enumerate() {
+                    let mut child_path =
+                        current_path.clone().unwrap_or_default();
+                    child_path.push(i);
+                    let selected = selected
+                        && selected_path
+                            .is_some_and(|p| p.get(depth) == Some(&i));
+                    if let Some(a) = child.draw_tree(
+                        ui,
+                        selected_path,
+                        Some(child_path),
+                        depth + 1,
+                        selected,
+                        auto_collapse,
+                        lock_topology,
+                    ) {
+                        path_action = Some(a);
+                    }
+                }
+
+                if let Some(action) = action {
+                    Some(PathAction {
+                        path: current_path.unwrap_or_default(),
+                        action,
+                    })
+                } else {
+                    path_action
+                }
+            })
+            .body_returned?
     }
 }
 
