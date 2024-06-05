@@ -45,6 +45,7 @@ struct RightSidebar {
     pub text_current: bool,
     pub visible: bool,
     pub model_view: bool,
+    pub markdown: bool,
     pub page: RightSidebarPage,
 }
 
@@ -95,6 +96,8 @@ pub struct App {
     right_sidebar: RightSidebar,
     /// Modal error messages.
     errors: Vec<Error>,
+    /// Commonmark cache
+    commonmark_cache: egui_commonmark::CommonMarkCache,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
     #[cfg(feature = "openai")]
@@ -503,17 +506,29 @@ impl App {
                             .supports_model_view()
                         {
                             if ui
-                        .checkbox(
-                            &mut self.right_sidebar.model_view,
-                            "model view",
-                        )
-                        .on_hover_text_at_pointer(
-                            "Show exactly what the model is prompted with.",
-                        )
-                        .changed()
-                    {
-                        self.right_sidebar.refresh_story();
-                    }
+                                .checkbox(
+                                    &mut self.right_sidebar.model_view,
+                                    "As Prompted",
+                                )
+                                .on_hover_text_at_pointer(
+                                    "Show only the text the model is prompted with.",
+                                )
+                                .changed()
+                            {
+                                self.right_sidebar.refresh_story();
+                            }
+                        }
+                        if ui
+                            .checkbox(
+                                &mut self.right_sidebar.markdown,
+                                "As Markdown",
+                            )
+                            .on_hover_text_at_pointer(
+                                "Render Markdown formatting.",
+                            )
+                            .changed()
+                        {
+                            self.right_sidebar.refresh_story();
                         }
 
                         let include_authors = if self.right_sidebar.model_view {
@@ -549,7 +564,12 @@ impl App {
 
                         // We have some text to display because there is a story and
                         // formatting cannot actually fail.
-                        ui.label(self.right_sidebar.text.as_ref().unwrap());
+                        if !self.right_sidebar.markdown {
+                            ui.label(self.right_sidebar.text.as_ref().unwrap());
+                        } else {
+                            egui_commonmark::CommonMarkViewer::new("story_markdown")
+                                .show(ui, &mut self.commonmark_cache, self.right_sidebar.text.as_ref().unwrap());
+                        }
                     }
                     RightSidebarPage::Tree => {
                         if let Some(story) = self.story_mut() {
@@ -567,7 +587,7 @@ impl App {
     /// Draw error message if there is one. Returns `true` if the error message
     /// is displayed. This function accepts a closure which can be used to
     /// display additional UI elements, such as a button to handle the error.
-    pub fn draw_error_messages(&mut self, ctx: &egui::Context) -> bool {
+    pub fn handle_errors(&mut self, ctx: &egui::Context) -> bool {
         let mut closed = false; // because two mutable references
         if let Some(Error {
             message,
@@ -603,121 +623,23 @@ impl App {
     pub fn draw_save_buttons(&mut self, ui: &mut egui::Ui) {
         ui.label("Save");
         ui.horizontal(|ui| {
-            let filter = Box::new(move |path: &std::path::Path| {
-                path.extension().map_or(false, |ext| ext == "json")
-            });
-
             let save_btn = ui
                 .button("Save")
                 .on_hover_text_at_pointer("Save story to JSON.");
-
-            let export = ui
-                .button("Export")
-                .on_hover_text_at_pointer("Export active story path to Markdown.");
-
+            let export = ui.button("Export").on_hover_text_at_pointer(
+                "Export active story path to Markdown.",
+            );
             let load_btn = ui
                 .button("Load")
                 .on_hover_text_at_pointer("Load story from JSON.");
 
+            // only one can happen per frame realistically
             if save_btn.clicked() {
-                let mut dialog = egui_file::FileDialog::save_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.save_dialog = Some(dialog);
+                self.save_to_json();
             } else if load_btn.clicked() {
-                let mut dialog = egui_file::FileDialog::open_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.saving_txt = false;
-                self.save_dialog = Some(dialog);
+                self.load_from_json();
             } else if export.clicked() {
-                let filter = Box::new(move |path: &std::path::Path| {
-                    path.extension().map_or(false, |ext| ext == "md")
-                });
-
-                let mut dialog = egui_file::FileDialog::open_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.saving_txt = true;
-                self.save_dialog = Some(dialog);
-            }
-
-            if let Some(dialog) = &mut self.save_dialog {
-                if dialog.show(ui.ctx()).selected() {
-                    if let Some(path) = dialog.path() {
-                        match dialog.dialog_type() {
-                            egui_file::DialogType::OpenFile => {
-                                let text = match std::fs::read_to_string(path) {
-                                    Ok(text) => text,
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to read `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                };
-                                let story:Story = match serde_json::from_str(&text) {
-                                    Ok(story) => story,
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to parse `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                };
-
-                                self.stories.push(story);
-                            },
-                            egui_file::DialogType::SaveFile => {
-                                let active_story_index = match self.active_story {
-                                    Some(i) => i,
-                                    None => {
-                                        self.errors.push("No active story to save.".into());
-                                        return;
-                                    }
-                                };
-
-                                let payload = if self.saving_txt {
-                                    self.stories[active_story_index].to_string()
-                                } else {
-                                    match serde_json::to_string(&self.stories[active_story_index]) {
-                                        Ok(json) => json,
-                                        Err(e) => {
-                                            self.errors.push(format!(
-                                                "Failed to serialize stories because: {}",
-                                                e
-                                            ).into());
-                                            return;
-                                        }
-                                    }
-                                };
-
-                                match std::fs::write(path, payload) {
-                                    Ok(_) => {},
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to write `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                }
-                            },
-                            egui_file::DialogType::SelectFolder => {
-                                unreachable!("Because we don't instantiate this type above.")
-                            },
-                        }
-                    }
-                    self.save_dialog = None;
-                }
+                self.export_to_markdown();
             }
         });
     }
@@ -847,11 +769,9 @@ impl App {
 
                 // TODO: the response from story.draw could be more succinct. We
                 // only realy know if we need to start generation (for now).
-                if let Some(action) = story.draw(
-                    ui,
-                    generation_in_progress,
-                    DrawMode::Nodes,
-                ) {
+                if let Some(action) =
+                    story.draw(ui, generation_in_progress, DrawMode::Nodes)
+                {
                     self.handle_story_action(action)
                 }
 
@@ -867,7 +787,12 @@ impl App {
                     );
                 }
                 ui.heading("Welcome to Weave!");
-                ui.label("Keyboard shortcuts:\n- `ESC` to start a new story or to access settings.\n- `F1` to toggle a view of the story as text or tree.");
+                egui_commonmark::commonmark_str!(
+                    "welcome",
+                    ui,
+                    &mut self.commonmark_cache,
+                    "resources/SHORTCUTS.md"
+                );
             }
         });
     }
@@ -1016,6 +941,148 @@ impl App {
         }
     }
 
+    /// Save active story to JSON.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_json(&mut self) {
+        self.save(true)
+    }
+
+    /// Export active story to Markdown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_to_markdown(&mut self) {
+        self.save(false)
+    }
+
+    /// Helper function for `save_to_json` and `export_to_markdown`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save(&mut self, json: bool) {
+        use std::path::Path;
+        let title = if json {
+            "Save Story to JSON"
+        } else {
+            "Export Story to Markdown"
+        };
+        let ext = if json { "json" } else { "md" };
+        let mut dialog = egui_file::FileDialog::save_file(None)
+            .title(title)
+            .show_files_filter(Box::new(move |path: &Path| {
+                path.extension().map_or(false, |e| e == ext)
+            }));
+        dialog.open();
+
+        // This will be displayed next frame. It's handled below in
+        // `handle_save_dialog`.
+        self.saving_txt = !json;
+        self.save_dialog = Some(dialog);
+    }
+
+    /// Load story from JSON.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_from_json(&mut self) {
+        let mut dialog = egui_file::FileDialog::open_file(None)
+            .title("Load Story from JSON")
+            .show_files_filter(Box::new(|path| {
+                path.extension().map_or(false, |ext| ext == "json")
+            }));
+        dialog.open();
+
+        self.save_dialog = Some(dialog);
+    }
+
+    /// Handle save dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn handle_save_dialog(&mut self, ctx: &egui::Context) {
+        let dialog = if let Some(dialog) = &mut self.save_dialog {
+            dialog
+        } else {
+            return;
+        };
+
+        if dialog.show(ctx).selected() {
+            if let Some(path) = dialog.path() {
+                match dialog.dialog_type() {
+                    egui_file::DialogType::OpenFile => {
+                        let text = match std::fs::read_to_string(path) {
+                            Ok(text) => text,
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to read `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        };
+                        let story: Story = match serde_json::from_str(&text) {
+                            Ok(story) => story,
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to parse `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        };
+
+                        self.stories.push(story);
+                    }
+                    egui_file::DialogType::SaveFile => {
+                        let active_story_index = match self.active_story {
+                            Some(i) => i,
+                            None => {
+                                self.errors
+                                    .push("No active story to save.".into());
+                                return;
+                            }
+                        };
+
+                        let payload = if self.saving_txt {
+                            self.stories[active_story_index].to_string()
+                        } else {
+                            match serde_json::to_string(
+                                &self.stories[active_story_index],
+                            ) {
+                                Ok(json) => json,
+                                Err(e) => {
+                                    self.errors.push(format!(
+                                                "Failed to serialize stories because: {}",
+                                                e
+                                            ).into());
+                                    return;
+                                }
+                            }
+                        };
+
+                        match std::fs::write(path, payload) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to write `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    egui_file::DialogType::SelectFolder => {
+                        unreachable!(
+                            "Because we don't instantiate this type above."
+                        )
+                    }
+                }
+            }
+            self.save_dialog = None;
+        }
+    }
+
     /// Handle input events (keyboard shortcuts, etc).
     pub fn handle_input(
         &mut self,
@@ -1023,6 +1090,73 @@ impl App {
         _frame: &mut eframe::Frame,
     ) {
         ctx.input(|input| {
+            // Command + key shortcuts
+            if input.modifiers.command && !input.modifiers.shift {
+                // Command + N: New empty paragraph with the default author.
+                // this code ensures that the author exists first because in our
+                // API, a panic will occur if the author does not exist. (We
+                // will probably change this in the future.)
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::N)
+                {
+                    let author = self.settings.default_author.clone();
+                    if let Some(story) = self.story_mut() {
+                        let id = story.add_author(author);
+                        story.add_empty_paragraph(id);
+                    }
+                }
+                // Command + S: Save story to JSON.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_in_progress
+                    && self.active_story.is_some()
+                    && input.key_pressed(egui::Key::S)
+                {
+                    self.save_to_json();
+                }
+                // Command + O: Load story from JSON.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::O)
+                {
+                    self.load_from_json();
+                }
+                // Command + DELETE: Delete selected node.
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::Delete)
+                {
+                    if let Some(story) = self.story_mut() {
+                        story.decapitate();
+                    }
+                }
+            }
+            // Command + Shift + key shortcuts
+            if input.modifiers.command && input.modifiers.shift {
+                // Command + Shift + S: Export story to Markdown.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_in_progress
+                    && self.active_story.is_some()
+                    && input.key_pressed(egui::Key::S)
+                {
+                    self.export_to_markdown();
+                }
+                // Command + Shift + N: New story with the default author.
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::N)
+                {
+                    let author = self.settings.default_author.clone();
+                    self.new_story("Untitled".to_string(), author);
+                }
+                // Command + Shift + DELETE: Delete active story.
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::Delete)
+                {
+                    if let Some(i) = self.active_story {
+                        self.stories.remove(i);
+                        self.active_story = None;
+                    }
+                }
+            }
+            // Key shortcuts
             if input.key_pressed(egui::Key::Escape) {
                 self.left_sidebar.visible = !self.left_sidebar.visible;
             }
@@ -1039,11 +1173,17 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        self.handle_input(ctx, frame);
-        if self.draw_error_messages(ctx) {
-            // An error message is displayed. We skip the rest of the UI.
+        if self.handle_errors(ctx) {
+            // An error message is displayed. We skip the rest of the UI. This
+            // is how we do "modal" in egui.
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.handle_save_dialog(ctx);
+        }
+        self.handle_input(ctx, frame);
+        // handle any dialog that might be open
         self.draw_left_sidebar(ctx, frame);
         self.draw_right_sidebar(ctx, frame);
         self.draw_central_panel(ctx, frame);

@@ -134,6 +134,12 @@ impl Story {
         }
     }
 
+    /// Add an empty paragraph to the story's head node.
+    pub fn add_empty_paragraph(&mut self, author: impl Into<AuthorID>) {
+        const EMPTY: std::iter::Empty<String> = std::iter::empty();
+        self.add_paragraph(author, EMPTY);
+    }
+
     /// Extend the current paragraph with strings.
     pub fn extend_paragraph(
         &mut self,
@@ -160,11 +166,14 @@ impl Story {
         if let Some(PathAction { path, mut action }) =
             self.root.draw(ui, selected_path, lock_topology, mode)
         {
-            self.active_path = Some(path);
+            if !lock_topology {
+                // Any action unless we're locked should update the active path.
+                self.active_path = Some(path);
+            }
             // FIXME: as it turns out all the actions are mutually exclusive,
             // so we can probably use an enum rather than a struct. The user can
             // only do one thing at a time, barring the UI hanging or something.
-            if action.delete {
+            if !lock_topology && action.delete {
                 // We can handle this here.
                 self.decapitate();
                 action.modified = true;

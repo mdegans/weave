@@ -368,65 +368,58 @@ impl Node<Meta> {
         &mut self,
         ui: &mut egui::Ui,
         action: &mut Option<Action>,
-    ) {
-        ui.horizontal(|ui| {
-            if ui
+    ) -> egui::Response {
+        let resp = ui.horizontal(|ui| {
+            let add_child = ui
                 .button("Add Child")
-                .on_hover_text_at_pointer(
-                    "Add an empty child node."
-                )
-                .clicked() {
+                .on_hover_text_at_pointer("Add an empty child node.");
+            if add_child.clicked() {
                 self.add_child(Node::default());
             }
-            if ui
-                .button("Delete")
-                .on_hover_text_at_pointer(
-                    "Delete this node and all its children."
-                )
-                .clicked() {
+            let delete = ui.button("Delete").on_hover_text_at_pointer(
+                "Delete this node and all its children.",
+            );
+            if delete.clicked() {
                 // Tell caller to delete this node.
                 *action = Some(Action {
                     delete: true,
                     ..Default::default()
                 });
             }
-            if ui
-                .button("Select")
-                .on_hover_text_at_pointer(
-                    "Set this node as the active node. The story will end or continue from this node."
-                )
-                .clicked() {
-                // Any action means selection.
-                *action = Some(Action::default());
-            }
             // FIXME: The terminology here could be improved. These are
             // confusing. We should find new names.
-            if ui
-                .button("Continue")
-                .on_hover_text_at_pointer(
-                    "Continue generating the current node.",
-                )
-                .clicked()
-            {
+            let continue_ = ui.button("Continue").on_hover_text_at_pointer(
+                "Continue generating the current node.",
+            );
+            if continue_.clicked() {
                 // Tell caller to continue generation on this node.
                 *action = Some(Action {
                     continue_: true,
                     ..Default::default()
                 });
             }
-            if ui
-                .button("Generate")
-                .on_hover_text_at_pointer("Create a new node, select it, and continue generation.")
-                .clicked() {
+            let generate = ui.button("Generate").on_hover_text_at_pointer(
+                "Create a new node, select it, and continue generation.",
+            );
+            if generate.clicked() {
                 // Tell caller to generate a new node.
-                *action = Some(
-                    Action {
-                        generate: Some(self.add_child(Node::default())),
-                        ..Default::default()
-                    },
-                );
+                *action = Some(Action {
+                    generate: Some(self.add_child(Node::default())),
+                    ..Default::default()
+                });
             }
+
+            add_child | delete | continue_ | generate
         });
+
+        let resp = resp.response | resp.inner;
+        if resp.clicked() && action.is_none() {
+            // Any click should select the node. If action is_some at all, it
+            // means the node should be selected, unless topology is locked, but
+            // that's handled elsewhere.
+            *action = Some(Action::default());
+        }
+        resp
     }
 
     /// Helper for draw functions to draw just the text edit.
@@ -435,11 +428,14 @@ impl Node<Meta> {
         &mut self,
         ui: &mut egui::Ui,
         action: &mut Option<Action>,
-    ) {
+    ) -> egui::Response {
         // We can still allow editing the text during generation since
         // the pieces are still appended to the end. There is no
         // ownership issue because of the immediate mode GUI.
-        if ui.text_edit_multiline(&mut self.text).changed() {
+        let resp = ui.text_edit_multiline(&mut self.text);
+        if resp.changed() {
+            // There has been a modification to the text. We need to update
+            // the modification flag so cached data is invalidated.
             // FIXME: We're clearing the pieces here, but we can handle
             // this better.
             self.pieces.clear();
@@ -454,6 +450,11 @@ impl Node<Meta> {
                 *action = Some(a);
             }
         }
+        if resp.clicked() && action.is_none() {
+            *action = Some(Action::default());
+        }
+
+        resp
     }
 
     /// Draw just the node. Returns true if the node should be active.
@@ -474,7 +475,7 @@ impl Node<Meta> {
             .chain(std::iter::once('…'))
             .collect::<String>();
 
-        let response = egui::Window::new(&title)
+        let mut response = egui::Window::new(&title)
             .id(egui::Id::new(self.meta.id))
             .collapsible(true)
             .title_bar(true)
@@ -501,6 +502,16 @@ impl Node<Meta> {
 
                 action
             });
+
+        if let Some(response) = &mut response {
+            if let Some(inner) = response.inner.as_mut() {
+                // If the window was clicked, we need to select the node.
+                if inner.is_none() && response.response.clicked() {
+                    // If the window was clicked, we need to select the node.
+                    inner.replace(Action::default());
+                }
+            }
+        }
 
         // If the window has been interacted with, we need to store the new size
         // and position. We also need to forward any inner activation response
@@ -618,7 +629,7 @@ impl Node<Meta> {
 
                 // Draw buttons
                 if !lock_topology {
-                    self.draw_buttons(ui, &mut action)
+                    self.draw_buttons(ui, &mut action);
                 }
 
                 // Draw text edit

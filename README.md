@@ -47,7 +47,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   - 🔲 Change tree topology
   - ✅ Edit nodes in place
 - 🔲 Navigation
-  - 🔲 Hotkeys
+  - ✅ Hotkeys
   - 🔲 Bookmarks
   - 🔲 Chapters
   - 🔲 'Visited' state
