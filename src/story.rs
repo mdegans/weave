@@ -111,6 +111,14 @@ impl Story {
             .map(|(id, author)| (id as u8, author.as_str()))
     }
 
+    /// Add a node to the story's head node.
+    pub fn paste_node(&mut self, mut node: Node<Meta>) {
+        // We do this for now to avoid a crash. We can't transfer author ids
+        // between stories yet, so we reset them to the head's author.
+        node.set_author(self.head().author_id);
+        self.head_mut().add_child(node);
+    }
+
     /// Add paragraph to the story's head node.
     ///
     /// # Panics
@@ -189,7 +197,7 @@ impl Story {
     /// Remove the head as well as all its children.
     ///
     /// Note: The root node is never removed.
-    pub fn decapitate(&mut self) {
+    pub fn decapitate(&mut self) -> Option<Node<Meta>> {
         if let Some(path) = &mut self.active_path {
             if path.is_empty() {
                 // There is always at least one node in the story.
@@ -202,9 +210,11 @@ impl Story {
                 }
                 // This wil now be the parent of the head node. We remove the
                 // child index we just popped.
-                node.children.remove(head_index);
+                return Some(node.children.remove(head_index));
             }
         }
+
+        return None;
     }
 
     /// Convert the story to a string with options

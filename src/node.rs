@@ -117,9 +117,24 @@ impl<T> Node<T> {
         }
     }
 
+    /// Set author for the node and all children.
+    pub fn set_author(&mut self, author_id: u8) {
+        self.author_id = author_id;
+        for child in self.children.iter_mut() {
+            child.set_author(author_id);
+        }
+    }
+
     /// Returns true if the node has no children.
     pub fn is_leaf(&self) -> bool {
         self.children.is_empty()
+    }
+
+    /// Count the number of nodes in the tree including self.
+    ///
+    /// This is O(n) where n is the number of nodes, but n should be small
+    pub fn count(&self) -> usize {
+        1 + self.children.iter().map(Self::count).sum::<usize>()
     }
 
     /// Adds a child to self. Returns the index of the child.

@@ -33,7 +33,7 @@ Notable features:
 
 Coming soon:
 
-- Keyboard shortcuts.
+- Multiple tabs and windows
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
 
@@ -44,7 +44,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 - ☑️ Tree view
   - ✅ Explore tree visually with mouse
   - ✅ Expand and collapse nodes
-  - 🔲 Change tree topology
+  - ✅ Change tree topology
   - ✅ Edit nodes in place
 - 🔲 Navigation
   - ✅ Hotkeys
@@ -58,7 +58,7 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   - ✅ Serializable application state, including stories, to JSON.
   - ✅ Open/save trees as JSON files
   - 🔲 Work with trees in multiple tabs
-  - 🔲 Combine multiple trees
+  - ✅ Combine multiple trees
 
 # Notable issues
 
@@ -70,5 +70,4 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 - It is not currently possible to have a scrollable viewport so it's
   recommended to collapse nodes if things get cluttered. This is because the
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
-  but not easily and not cleanly. When it is resolved the central panel will be
-  split into story and node views.
+  but not easily and not cleanly.

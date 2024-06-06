@@ -3,9 +3,10 @@ mod settings;
 use {
     self::settings::{BackendOptions, Settings},
     crate::{
-        node::Action,
+        node::{self, Action, Meta, Node},
         story::{DrawMode, Story},
     },
+    egui::TextBuffer,
 };
 
 #[derive(Default, PartialEq, derive_more::Display)]
@@ -94,6 +95,8 @@ pub struct App {
     settings: Settings,
     left_sidebar: LeftSidebar,
     right_sidebar: RightSidebar,
+    /// Temporary node storage for copy/paste.
+    node_clipboard: Option<Node<Meta>>,
     /// Modal error messages.
     errors: Vec<Error>,
     /// Commonmark cache
@@ -1083,6 +1086,18 @@ impl App {
         }
     }
 
+    /// Draw clipboard.
+    pub fn draw_clipboard(&mut self, ctx: &egui::Context) {
+        if let Some(node) = &self.node_clipboard {
+            egui::TopBottomPanel::bottom("clipboard").show(ctx, |ui| {
+                let mut text =
+                    node.to_string().chars().take(20).collect::<String>();
+                text.push_str(&format!("... (and {} children)", node.count()));
+                ui.horizontal(|ui| ui.label("Clipboard:") | ui.label(text))
+            });
+        }
+    }
+
     /// Handle input events (keyboard shortcuts, etc).
     pub fn handle_input(
         &mut self,
@@ -1126,6 +1141,29 @@ impl App {
                 {
                     if let Some(story) = self.story_mut() {
                         story.decapitate();
+                    }
+                }
+                // Command + ,: Cut selected node.
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::Comma)
+                {
+                    if let Some(story) = self.story_mut() {
+                        self.node_clipboard = story.decapitate();
+                    }
+                }
+                // Command + .: Paste node from clipboard.
+                if !self.generation_in_progress
+                    && input.key_pressed(egui::Key::Period)
+                {
+                    let node = self.node_clipboard.take();
+                    if let Some(story) = self.story_mut() {
+                        if let Some(node) = node {
+                            story.paste_node(node);
+                        }
+                    } else {
+                        // Put the node back. We do this because multiple
+                        // mutable references to self are not allowed.
+                        self.node_clipboard = node;
                     }
                 }
             }
@@ -1186,6 +1224,7 @@ impl eframe::App for App {
         // handle any dialog that might be open
         self.draw_left_sidebar(ctx, frame);
         self.draw_right_sidebar(ctx, frame);
+        self.draw_clipboard(ctx);
         self.draw_central_panel(ctx, frame);
     }
 
