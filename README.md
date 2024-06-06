@@ -34,6 +34,7 @@ Notable features:
 Coming soon:
 
 - Multiple tabs and windows
+- Node layout features, including force direction.
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
 
@@ -70,4 +71,4 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 - It is not currently possible to have a scrollable viewport so it's
   recommended to collapse nodes if things get cluttered. This is because the
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
-  but not easily and not cleanly.
+  but not easily and not cleanly. Zoom does work, however (Ctrl + + and Ctrl + -).
