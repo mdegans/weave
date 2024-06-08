@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::node::Layout;
+
 /// Backend for generation.
 #[cfg(feature = "generate")]
 #[derive(
@@ -186,6 +188,8 @@ pub struct Settings {
     pub prompt_include_authors: bool,
     /// Whether to show the title to the model.
     pub prompt_include_title: bool,
+    /// Node layout settings.
+    pub layout: Layout,
     #[cfg(feature = "generate")]
     #[serde(default)]
     pub selected_generative_backend: GenerativeBackend,

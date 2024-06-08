@@ -164,6 +164,7 @@ impl Story {
         &mut self,
         ui: &mut egui::Ui,
         lock_topology: bool,
+        layout: crate::node::Layout,
         mode: DrawMode,
     ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
@@ -172,7 +173,8 @@ impl Story {
 
         // Draw, and update active path if changed.
         if let Some(PathAction { path, mut action }) =
-            self.root.draw(ui, selected_path, lock_topology, mode)
+            self.root
+                .draw(ui, selected_path, lock_topology, layout, mode)
         {
             if !lock_topology {
                 // Any action unless we're locked should update the active path.
@@ -208,7 +210,7 @@ impl Story {
                 for i in path {
                     node = &mut node.children[*i];
                 }
-                // This wil now be the parent of the head node. We remove the
+                // This will now be the parent of the head node. We remove the
                 // child index we just popped.
                 return Some(node.children.remove(head_index));
             }

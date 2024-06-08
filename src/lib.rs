@@ -26,6 +26,9 @@ pub mod node;
 /// Contains a branching [`Story`] (a tree of [`Node`]s).
 pub mod story;
 
+#[macro_use]
+mod macros;
+
 // wasm entrypoints:
 
 #[cfg(feature = "gui")]

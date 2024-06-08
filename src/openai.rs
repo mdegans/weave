@@ -517,7 +517,7 @@ impl Worker {
             let client = Client::new(&api_key);
 
             rt.block_on(async move {
-                // The logic here is syncronous. We do want to wait for one
+                // The logic here is synchronous. We do want to wait for one
                 // request to finish before starting the next one. Otherwise we
                 // could use `for_each_concurrent` or something, but we would
                 // have to associate the requests with the appropriate nodes.
@@ -727,7 +727,7 @@ impl Worker {
         }
 
         if let Some(_) = self.from_worker.take() {
-            // Reciever dropped. This will also cause the worker to terminate
+            // Receiver dropped. This will also cause the worker to terminate
             // depending on which happens first.
         }
 

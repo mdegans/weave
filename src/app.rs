@@ -3,10 +3,9 @@ mod settings;
 use {
     self::settings::{BackendOptions, Settings},
     crate::{
-        node::{self, Action, Meta, Node},
+        node::{Action, Meta, Node},
         story::{DrawMode, Story},
     },
-    egui::TextBuffer,
 };
 
 #[derive(Default, PartialEq, derive_more::Display)]
@@ -54,10 +53,10 @@ impl RightSidebar {
     /// The story text will be updated on the next draw if this is called. This
     /// is an optimization to avoid reformatting the story each frame if it
     /// hasn't changed.
-    // TODO: This might not actually be worth it. We shoudl profile first since
+    // TODO: This might not actually be worth it. We should profile first since
     // formatting the story and traversing the tree isn't actually all that
     // expensive, but it could be if there are many nodes. There is a lot of CPU
-    // usage, but it doens't seem to be coming from our code. My guess is using
+    // usage, but it doesn't seem to be coming from our code. My guess is using
     // `egui::Window` for each node is part of the problem.
     pub fn refresh_story(&mut self) {
         self.text_current = false;
@@ -106,7 +105,7 @@ pub struct App {
     #[cfg(feature = "openai")]
     openai_worker: crate::openai::Worker,
     #[cfg(feature = "generate")]
-    generation_in_progress: bool,
+    pub(crate) generation_in_progress: bool,
     #[cfg(not(target_arch = "wasm32"))]
     save_dialog: Option<egui_file::FileDialog>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -479,7 +478,7 @@ impl App {
             return;
         }
         // Story is some. We can unwrap below. Story cannot change while this
-        // function is running since it is not accessable from any other
+        // function is running since it is not accessible from any other
         // thread.
 
         egui::SidePanel::right("right_sidebar")
@@ -575,9 +574,11 @@ impl App {
                         }
                     }
                     RightSidebarPage::Tree => {
+                        let lock_topology = !self.generation_in_progress;
+                        let layout = self.settings.layout.clone();
                         if let Some(story) = self.story_mut() {
                             if let Some(action) =
-                                story.draw(ui, false, DrawMode::Tree)
+                                story.draw(ui, lock_topology, layout, DrawMode::Tree)
                             {
                                 self.handle_story_action(action);
                             }
@@ -763,6 +764,7 @@ impl App {
             // with it.
             // In the meantime, the windows are, at least, collapsible.
             let generation_in_progress = self.generation_in_progress;
+            let layout = self.settings.layout.clone();
             let mut update_right_sidebar = false;
             if let Some(story) = self.story_mut() {
                 if !new_pieces.is_empty() {
@@ -771,10 +773,13 @@ impl App {
                 }
 
                 // TODO: the response from story.draw could be more succinct. We
-                // only realy know if we need to start generation (for now).
-                if let Some(action) =
-                    story.draw(ui, generation_in_progress, DrawMode::Nodes)
-                {
+                // only really know if we need to start generation (for now).
+                if let Some(action) = story.draw(
+                    ui,
+                    generation_in_progress,
+                    layout,
+                    DrawMode::Nodes,
+                ) {
                     self.handle_story_action(action)
                 }
 
@@ -1098,6 +1103,17 @@ impl App {
         }
     }
 
+    /// Draw toolbar.
+    ///
+    /// Contains common like saving, loading, layout toggles, etc.
+    pub fn draw_toolbar(&mut self, ctx: &egui::Context) {
+        if self.active_story.is_some() {
+            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+                ui.horizontal(|ui| self.settings.layout.ui(ui));
+            });
+        }
+    }
+
     /// Handle input events (keyboard shortcuts, etc).
     pub fn handle_input(
         &mut self,
@@ -1224,6 +1240,7 @@ impl eframe::App for App {
         // handle any dialog that might be open
         self.draw_left_sidebar(ctx, frame);
         self.draw_right_sidebar(ctx, frame);
+        self.draw_toolbar(ctx);
         self.draw_clipboard(ctx);
         self.draw_central_panel(ctx, frame);
     }
