@@ -625,16 +625,24 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn draw_save_buttons(&mut self, ui: &mut egui::Ui) {
-        ui.label("Save");
         ui.horizontal(|ui| {
             let save_btn = ui
-                .button("Save")
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/save.png"
+                )))
                 .on_hover_text_at_pointer("Save story to JSON.");
-            let export = ui.button("Export").on_hover_text_at_pointer(
-                "Export active story path to Markdown.",
-            );
+
+            let export = ui
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/export.png"
+                )))
+                .on_hover_text_at_pointer(
+                    "Export active story path to Markdown.",
+                );
             let load_btn = ui
-                .button("Load")
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/load.png"
+                )))
                 .on_hover_text_at_pointer("Load story from JSON.");
 
             // only one can happen per frame realistically
@@ -702,6 +710,13 @@ impl App {
 
     /// Draw the stories sidebar tab.
     fn draw_stories_tab(&mut self, ui: &mut egui::Ui) {
+        // We might not support wasm at all, but if we do this will have to be
+        // implemented differently. Skip it for now.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.draw_save_buttons(ui);
+            ui.separator();
+        }
         let mut delete = None;
         for (i, story) in self.stories.iter().enumerate() {
             ui.horizontal(|ui| {
@@ -729,11 +744,6 @@ impl App {
             }
             ui.text_edit_singleline(&mut self.left_sidebar.title_buf);
         });
-
-        // We might not support wasm at all, but if we do this will have to be
-        // implemented differently. Skip it for now.
-        #[cfg(not(target_arch = "wasm32"))]
-        self.draw_save_buttons(ui);
     }
 
     /// Draw the central panel.

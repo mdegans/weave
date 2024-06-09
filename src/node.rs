@@ -736,7 +736,7 @@ impl Node<Meta> {
                 .button("Add Child")
                 .on_hover_text_at_pointer("Add an empty child node.");
             if add_child.clicked() {
-                self.add_child(Node::default());
+                self.new_child_below();
             }
             let delete = ui.button("Delete").on_hover_text_at_pointer(
                 "Delete this node and all its children.",
@@ -766,7 +766,7 @@ impl Node<Meta> {
             if generate.clicked() {
                 // Tell caller to generate a new node.
                 *action = Some(Action {
-                    generate: Some(self.add_child(Node::default())),
+                    generate: Some(self.new_child_below()),
                     ..Default::default()
                 });
             }
@@ -782,6 +782,21 @@ impl Node<Meta> {
             *action = Some(Action::default());
         }
         resp
+    }
+
+    /// Create a new child, below the parent's position.
+    ///
+    /// Returns the index of the new child.
+    #[cfg(feature = "gui")]
+    pub fn new_child_below(&mut self) -> usize {
+        let mut child: Node<Meta> = Node::default();
+        child.meta.pos = self
+            .meta
+            .rect()
+            .expand(PADDING)
+            .translate(egui::Vec2::new(0.0, self.meta.size.y + (PADDING * 2.0)))
+            .center();
+        self.add_child(child)
     }
 
     /// Helper for draw functions to draw just the text edit.
@@ -908,10 +923,10 @@ impl Node<Meta> {
             // Response from the *window*.
             let win = response.response;
 
-            if win.dragged() {
-                // Allow dragging. Otherwise the rounding done by egui will
-                // cause the nodes to stand still because the velocity will be
-                // too small.
+            if win.dragged() || self.meta.pos == egui::Pos2::ZERO {
+                // Otherwise the rounding done by egui will cause the nodes to
+                // stand still because the velocity will be too small. We also
+                // set it in the case the node has not been positioned yet.
                 self.meta.pos = win.rect.min;
                 self.meta.size = win.rect.size();
             }
