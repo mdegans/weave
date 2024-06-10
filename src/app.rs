@@ -194,7 +194,7 @@ impl App {
 
     /// (active) story
     pub fn story(&self) -> Option<&Story> {
-        self.active_story.map(|i| &self.stories[i])
+        self.active_story.map(|i| self.stories.get(i))?
     }
 
     /// (active) story
@@ -553,14 +553,14 @@ impl App {
                                 .take()
                                 .unwrap_or(String::new());
                             text.clear();
-                            self.story()
-                                .unwrap()
-                                .format_full(
+                            if let Some(story) = self.story() {
+                                story.format_full(
                                     &mut text,
                                     include_authors,
                                     include_title,
                                 )
                                 .unwrap();
+                            }
                             self.right_sidebar.text = Some(text);
                         }
 
