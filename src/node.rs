@@ -12,7 +12,7 @@ pub struct Piece {
 /// Time step for the force-directed layout.
 const TIME_STEP: f32 = 1.0 / 60.0;
 /// Damping factor for the force-directed layout.
-const DAMPING: f32 = 0.01;
+const DAMPING: f32 = 0.05;
 /// Boundary damping factor when nodes hit the boundaries and bounce back.
 const BOUNDARY_DAMPING: f32 = 0.5;
 /// Mass divisor for the force-directed layout.
