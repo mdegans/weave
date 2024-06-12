@@ -367,7 +367,7 @@ impl Layout {
                 );
             let mut layout_positions = self.positional.is_some();
             ui.toggle_value(&mut layout_positions, "auto-layout")
-                .on_hover_text_at_pointer("Organize nodes automatically.");
+                .on_hover_text_at_pointer("(experimental) Organize nodes automatically.");
             if layout_positions {
                 let positional =
                     self.positional.get_or_insert_with(Default::default);
