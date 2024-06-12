@@ -12,7 +12,7 @@ pub struct Piece {
 /// Time step for the force-directed layout.
 const TIME_STEP: f32 = 1.0 / 60.0;
 /// Damping factor for the force-directed layout.
-const DAMPING: f32 = 0.050;
+const DAMPING: f32 = 0.01;
 /// Boundary damping factor when nodes hit the boundaries and bounce back.
 const BOUNDARY_DAMPING: f32 = 0.5;
 /// Mass divisor for the force-directed layout.
@@ -99,8 +99,6 @@ pub enum PositionalLayout {
         repulsion: f32,
         /// Attraction factor (of edges). This is linear.
         attraction: f32,
-        /// Whether children should collide with each other.
-        child_colissions: bool,
         /// How much nodes should be attracted to the centroid. This is inverse
         /// square.
         gravity: f32,
@@ -122,7 +120,6 @@ impl PositionalLayout {
             repulsion: 50.0,
             attraction: 1.0,
             gravity: 1.0,
-            child_colissions: true,
         }
     }
 
@@ -132,7 +129,6 @@ impl PositionalLayout {
             Self::ForceDirected {
                 repulsion,
                 attraction,
-                child_colissions,
                 gravity,
             } => {
                 ui.horizontal(|ui| {
@@ -159,13 +155,6 @@ impl PositionalLayout {
                             )
                     })
                     .response
-                    | ui.horizontal(|ui| {
-                        ui.toggle_value(child_colissions, "child colissions")
-                            .on_hover_text_at_pointer(
-                            "Whether children should collide with each other.",
-                        )
-                    })
-                    .response
             }
         }
     }
@@ -181,7 +170,6 @@ impl PositionalLayout {
             Self::ForceDirected {
                 repulsion,
                 attraction,
-                child_colissions,
                 gravity,
             } => {
                 // The general idea is for nodes to repel each other with
@@ -228,7 +216,6 @@ impl PositionalLayout {
                     // they do not have edges, they do not attract each other.
                     for i in 0..node.children.len() {
                         let a_mass = node.children[i].meta.mass();
-                        let a_rect = node.children[i].meta.rect();
 
                         // Accumulate the local centroid and cumulative mass.
                         centroid += node.children[i].meta.pos.to_vec2();
@@ -241,7 +228,6 @@ impl PositionalLayout {
 
                             let b = &node.children[j];
                             let b_mass = b.meta.mass();
-                            let b_rect = b.meta.rect();
 
                             let dist =
                                 node.children[i].meta.pos.distance(b.meta.pos);
@@ -250,13 +236,8 @@ impl PositionalLayout {
                                 * (node.children[i].meta.pos - b.meta.pos)
                                     .normalized();
 
-                            // Self-colissions for children. Same logic as above.
-                            if child_colissions && a_rect.intersects(b_rect) {
-                                node.children[i].meta.vel -= force * TIME_STEP;
-                                node.children[i].meta.vel *= BOUNDARY_DAMPING;
-                            } else {
-                                node.children[i].meta.vel += force * TIME_STEP;
-                            }
+                            // Children always repel each other.
+                            node.children[i].meta.vel += force * TIME_STEP;
                         }
                     }
 
@@ -289,7 +270,8 @@ impl PositionalLayout {
                     // Node isn't moving, we don't need to update the position.
                     // If no nodes are moving, we don't need to redraw. At that
                     // point the simulation has converged.
-                    if node.meta.vel.normalized().max_elem() >= DAMPING {
+                    if node.meta.vel.normalized().max_elem() >= (DAMPING / 10.0)
+                    {
                         node.meta.vel = node.meta.vel.clamp(
                             egui::Vec2::splat(-PADDING),
                             egui::Vec2::splat(PADDING),
