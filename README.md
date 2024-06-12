@@ -12,7 +12,7 @@ Weave is a "multiversal" generative tree writing tool akin to [`loom`](https://g
 ## Installation
 
 - **Download** a release from the [releases page](https://github.com/mdegans/weave/releases) and extract it.
-- For **macOS and Linux** installation will be straighforward with an `.app` and a Debian package containing a static binary.
+- For **macOS and Linux** installation will be straightforward with an `.app` and a Debian package containing a static binary.
 - For Windows, a release is not yet provided but it will probably build for `openai` with `cargo build --release --features="openai,gui"`. LLaMA will require a bit more work to build on Windows.
 
 ## Usage
@@ -34,6 +34,8 @@ Notable features:
 Coming soon:
 
 - Multiple tabs and windows
+- Node layout features, including force direction.
+- Per-story settings
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
 
@@ -70,4 +72,4 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 - It is not currently possible to have a scrollable viewport so it's
   recommended to collapse nodes if things get cluttered. This is because the
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
-  but not easily and not cleanly.
+  but not easily and not cleanly. Zoom does work, however (Ctrl + + and Ctrl + -).

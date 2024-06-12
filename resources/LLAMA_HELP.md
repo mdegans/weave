@@ -42,4 +42,4 @@ Note that some sampling methods like "Locally Typical" may not need much of a re
 
 You _do not_ need to accept any license agreement to download or use LLaMA. The US copyright office has stated that model weights are [_not copyrightable_](https://law.stackexchange.com/questions/90429/what-ip-law-would-apply-to-trained-weights-of-an-ai-model) and therefore, if you do not accept any license agreement, you are free to use the model weights any way you see fit.
 
-**HOWEVER** use of this crate/app _does_ require acceptance of a relatively restrictive ["Responsable AI" license](../LICENSE.md). If you don't want to accept this license, use `text_generation_ui` or whatever other tool you like.
+**HOWEVER** use of this crate/app _does_ require acceptance of a relatively restrictive ["Responsible AI" license](../LICENSE.md). If you don't want to accept this license, use `text_generation_ui` or whatever other tool you like.

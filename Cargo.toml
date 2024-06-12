@@ -49,6 +49,8 @@ eframe = { version = "0.27", features = [
     "persistence",
     "wgpu",
 ], optional = true }
+egui_extras = { version = "0.27", features = ["all_loaders"] }
+image = { version = "0.24", features = ["png"] }
 egui_file = { version = "0.17.0", optional = true }
 derive_more = "0.99.17"
 serde_json = "1.0"

@@ -1,3 +1,4 @@
+use egui::Pos2;
 use serde::{Deserialize, Serialize};
 
 /// A piece of the text. Generally representing a detokenized token.
@@ -7,6 +8,17 @@ pub struct Piece {
     /// End index of the piece (start is the end of the previous piece).
     pub end: usize,
 }
+
+/// Time step for the force-directed layout.
+const TIME_STEP: f32 = 1.0 / 60.0;
+/// Damping factor for the force-directed layout.
+const DAMPING: f32 = 0.05;
+/// Boundary damping factor when nodes hit the boundaries and bounce back.
+const BOUNDARY_DAMPING: f32 = 0.5;
+/// Mass divisor for the force-directed layout.
+const MASS_DIVISOR: f32 = 1000.0;
+/// Padding for the bounding rectangle of the node. Also the max velocity.
+const PADDING: f32 = 32.0;
 
 static_assertions::assert_impl_all!(Piece: Send, Sync);
 
@@ -34,17 +46,33 @@ static_assertions::assert_impl_all!(Node<Meta>: Send, Sync);
 pub struct Meta {
     /// Node id.
     pub(crate) id: u128,
-    /// Node position (top left).
+    /// Node position (center).
     pub pos: egui::Pos2,
     /// Node size.
     pub size: egui::Vec2,
+    /// Velocity.
+    #[serde(skip)]
+    pub vel: egui::Vec2,
 }
 
 #[cfg(feature = "gui")]
 impl Meta {
     /// Get unique id.
+    #[inline]
     pub fn id(&self) -> u128 {
         self.id
+    }
+
+    /// Get bounding rectangle (with padding)
+    #[inline]
+    pub fn rect(&self) -> egui::Rect {
+        egui::Rect::from_center_size(self.pos, self.size).expand(PADDING)
+    }
+
+    /// Get mass of the node.
+    #[inline]
+    pub fn mass(&self) -> f32 {
+        self.size.x * self.size.y / MASS_DIVISOR
     }
 }
 
@@ -55,8 +83,308 @@ impl Default for Meta {
         Self {
             id,
             pos: egui::Pos2::new(0.0, 0.0),
-            size: egui::Vec2::new(100.0, 100.0),
+            size: egui::Vec2::new(0.0, 0.0),
+            vel: egui::Vec2::new(0.0, 0.0),
         }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[cfg(feature = "gui")]
+/// Positional layout for the tree.
+pub enum PositionalLayout {
+    /// Force-directed layout.
+    ForceDirected {
+        /// Repulsion factor (of nodes). This is inverse square.
+        repulsion: f32,
+        /// Attraction factor (of edges). This is linear.
+        attraction: f32,
+        /// How much nodes should be attracted to the centroid. This is inverse
+        /// square.
+        gravity: f32,
+    },
+}
+
+#[cfg(feature = "gui")]
+impl PositionalLayout {
+    /// Get the layout as a string.
+    pub const fn as_str(&self) -> &str {
+        match self {
+            Self::ForceDirected { .. } => "Force Directed",
+        }
+    }
+
+    /// Force-directed layout default.
+    pub const fn force_directed() -> Self {
+        Self::ForceDirected {
+            repulsion: 50.0,
+            attraction: 1.0,
+            gravity: 1.0,
+        }
+    }
+
+    /// UI for the layout.
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        match self {
+            Self::ForceDirected {
+                repulsion,
+                attraction,
+                gravity,
+            } => {
+                ui.horizontal(|ui| {
+                    crate::icon!(ui, "../resources/expand.png", 24.0)
+                        | ui.add(egui::Slider::new(repulsion, 0.0..=100.0))
+                            .on_hover_text_at_pointer(
+                                "How much children repel each other.",
+                            )
+                })
+                .response
+                    | ui.horizontal(|ui| {
+                        crate::icon!(ui, "../resources/contract.png", 24.0)
+                            | ui.add(egui::Slider::new(attraction, 0.0..=2.0))
+                                .on_hover_text_at_pointer(
+                                    "How much nodes attract by edges attract.",
+                                )
+                    })
+                    .response
+                    | ui.horizontal(|ui| {
+                        crate::icon!(ui, "../resources/gravity.png", 24.0)
+                            | ui.add(egui::Slider::new(gravity, 0.0..=2.0))
+                                .on_hover_text_at_pointer(
+                                "How much nodes are attracted to a weighted average of global and local centroids.",
+                            )
+                    })
+                    .response
+            }
+        }
+    }
+
+    /// Apply one iteration of force-directed layout to the node. Window
+    /// `bounds` should be supplied to keep the nodes within the window.
+    ///
+    /// Returns true if redraw is needed.
+    pub fn apply(self, node: &mut Node<Meta>, bounds: egui::Rect) -> bool {
+        let mut redraw = false;
+
+        match self {
+            Self::ForceDirected {
+                repulsion,
+                attraction,
+                gravity,
+            } => {
+                // The general idea is for nodes to repel each other with
+                // inverse square force and attract to each other with linear
+                // force where an edge is present. If nodes overlap, the force
+                // is reversed. The nodes also bounce off the boundaries.
+
+                // We avoid quadratic complexity by only calculating the force
+                // between parent and siblings and siblings with each other.
+                // This means that forces between cousins are not calculated,
+                // but it's good enough for a tree.
+
+                // Thank you, Bing's Copilot for pointing out that I was missing
+                // the time step here. Also for pointing out that I was using
+                // the distance between child and parent to calculate force for
+                // siblings below.
+
+                // The global centroid and cumulative mass of the tree. This and
+                // the local centroid and cumulative mass are used for gravity.
+                let mut global_centroid = Pos2::ZERO;
+                let mut global_cum_mass = 0.0;
+                if gravity > 0.0 {
+                    // Calculate the global centroid and mass of the tree.
+                    let (_, c, m) = node.centroid();
+                    global_centroid = c;
+                    global_cum_mass = m;
+                }
+
+                let mut stack = vec![node];
+                while let Some(node) = stack.pop() {
+                    // Apply damping to the velocity.
+                    node.meta.vel *= 1.0 - DAMPING;
+
+                    // This node's mass and bounding rectangle.
+                    let mass = node.meta.mass();
+                    let rect = node.meta.rect();
+
+                    // The local centroid and cumulative mass (just self and
+                    // children)
+                    let mut centroid = node.meta.pos;
+                    let mut cum_mass = mass;
+
+                    // Child-to-child interactions. They repel each other. Since
+                    // they do not have edges, they do not attract each other.
+                    for i in 0..node.children.len() {
+                        let a_mass = node.children[i].meta.mass();
+
+                        // Accumulate the local centroid and cumulative mass.
+                        centroid += node.children[i].meta.pos.to_vec2();
+                        cum_mass += a_mass;
+
+                        for j in 0..node.children.len() {
+                            if i == j {
+                                continue;
+                            }
+
+                            let b = &node.children[j];
+                            let b_mass = b.meta.mass();
+
+                            let dist =
+                                node.children[i].meta.pos.distance(b.meta.pos);
+                            let force = repulsion * a_mass * b_mass
+                                / dist.powi(2)
+                                * (node.children[i].meta.pos - b.meta.pos)
+                                    .normalized();
+
+                            // Children always repel each other.
+                            node.children[i].meta.vel += force * TIME_STEP;
+                        }
+                    }
+
+                    // Our final centroid and cumulative mass is a weighted
+                    // average of the local and global centroids and masses.
+                    // This is hella approximate, but it works.
+                    centroid = centroid / (node.children.len() as f32 + 1.0);
+                    centroid =
+                        (centroid * 2.0 + global_centroid.to_vec2()) / 3.0;
+                    cum_mass = (cum_mass * 2.0 + global_cum_mass) / 3.0;
+                    if gravity > 0.0 && !rect.contains(centroid) {
+                        let dist = node.meta.pos.distance(centroid);
+                        let force = gravity * mass * cum_mass / dist.powi(2)
+                            * (centroid - node.meta.pos).normalized();
+                        node.meta.vel += force * TIME_STEP;
+                    }
+
+                    // Bounce off the boundaries. Thanks to Bing's Copilot for
+                    // suggesting this. I used the same idea below for the
+                    // node colissions.
+                    let new_pos = egui::Rect::from_center_size(
+                        node.meta.pos + node.meta.vel,
+                        node.meta.size,
+                    );
+                    if !bounds.contains_rect(new_pos) {
+                        node.meta.vel = -node.meta.vel * BOUNDARY_DAMPING;
+                    }
+
+                    // DAMPING is also used as a cutoff for velocity. If the
+                    // Node isn't moving, we don't need to update the position.
+                    // If no nodes are moving, we don't need to redraw. At that
+                    // point the simulation has converged.
+                    if node.meta.vel.normalized().max_elem() >= (DAMPING / 10.0)
+                    {
+                        node.meta.vel = node.meta.vel.clamp(
+                            egui::Vec2::splat(-PADDING),
+                            egui::Vec2::splat(PADDING),
+                        );
+                        node.meta.pos += node.meta.vel;
+                        node.meta.pos =
+                            node.meta.pos.clamp(bounds.min, bounds.max);
+
+                        // If the node has moved, we need to redraw.
+                        redraw = true;
+                    }
+
+                    // Child-to-parent interactions. They attract each other.
+                    // They do have edges so they also repel each other.
+                    for child in node.children.iter_mut() {
+                        // Attract to parent.
+                        let child_mass = child.meta.mass();
+                        let child_rect = child.meta.rect();
+                        let dist = node.meta.pos.distance(child.meta.pos);
+                        let attraction_force = attraction * mass * child_mass
+                            / dist
+                            * (node.meta.pos - child.meta.pos).normalized();
+                        let repulsion_force = repulsion * mass * child_mass
+                            / dist.powi(2)
+                            * (node.meta.pos - child.meta.pos).normalized();
+                        let force = attraction_force - repulsion_force;
+
+                        if !rect.intersects(child_rect) {
+                            child.meta.vel += force * TIME_STEP;
+                        } else {
+                            child.meta.vel -= force * TIME_STEP;
+                            child.meta.vel *= BOUNDARY_DAMPING;
+                        }
+
+                        // Recurse into the child.
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        redraw
+    }
+}
+
+#[cfg(feature = "gui")]
+impl Default for PositionalLayout {
+    fn default() -> Self {
+        Self::force_directed()
+    }
+}
+
+#[cfg(feature = "gui")]
+impl PartialEq for PositionalLayout {
+    /// We only need to compare the variant. This is because we're using it in
+    /// a combo box below and we don't compare it anywhere else. This is "bad",
+    /// but it's fine for now.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ForceDirected { .. }, Self::ForceDirected { .. }) => true,
+        }
+    }
+}
+
+/// Layout for the tree.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[cfg(feature = "gui")]
+pub struct Layout {
+    /// Auto-collapse all nodes except the selected path.
+    auto_collapse: bool,
+    /// Positional layout.
+    positional: Option<PositionalLayout>,
+}
+
+#[cfg(feature = "gui")]
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            auto_collapse: false,
+            positional: None,
+        }
+    }
+}
+
+#[cfg(feature = "gui")]
+impl Layout {
+    /// UI for the layout.
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.toggle_value(&mut self.auto_collapse, "auto-collapse")
+                .on_hover_text_at_pointer(
+                    "Collapse all nodes except selected. Note that for the moment this only works for existing nodes in the tree view.",
+                );
+            let mut layout_positions = self.positional.is_some();
+            ui.toggle_value(&mut layout_positions, "auto-layout")
+                .on_hover_text_at_pointer("(experimental) Organize nodes automatically.");
+            if layout_positions {
+                let positional =
+                    self.positional.get_or_insert_with(Default::default);
+                egui::ComboBox::from_label("Layout Method")
+                    .selected_text(positional.as_str())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            positional,
+                            PositionalLayout::force_directed(),
+                            "Force Directed",
+                        );
+                    });
+                positional.ui(ui);
+            } else {
+                self.positional = None;
+            }
+        });
     }
 }
 
@@ -292,6 +620,7 @@ impl Node<Meta> {
         ui: &mut egui::Ui,
         active_path: Option<&[usize]>,
         lock_topology: bool,
+        layout: Layout,
     ) -> Option<PathAction> {
         let active_path = active_path.unwrap_or(&[]);
         let mut ret = None; // the default, meaning no action is needed.
@@ -323,7 +652,7 @@ impl Node<Meta> {
 
             // Draw the node and take any action in response to it's widgets.
             if let Some(action) =
-                node.draw_one_node(ui, highlight_node, lock_topology)
+                node.draw_one_node(ui, highlight_node, lock_topology, layout)
             {
                 if action.delete {
                     // How to delete a node? We're taking a reference to the
@@ -389,7 +718,7 @@ impl Node<Meta> {
                 .button("Add Child")
                 .on_hover_text_at_pointer("Add an empty child node.");
             if add_child.clicked() {
-                self.add_child(Node::default());
+                self.new_child_below();
             }
             let delete = ui.button("Delete").on_hover_text_at_pointer(
                 "Delete this node and all its children.",
@@ -419,7 +748,7 @@ impl Node<Meta> {
             if generate.clicked() {
                 // Tell caller to generate a new node.
                 *action = Some(Action {
-                    generate: Some(self.add_child(Node::default())),
+                    generate: Some(self.new_child_below()),
                     ..Default::default()
                 });
             }
@@ -435,6 +764,21 @@ impl Node<Meta> {
             *action = Some(Action::default());
         }
         resp
+    }
+
+    /// Create a new child, below the parent's position.
+    ///
+    /// Returns the index of the new child.
+    #[cfg(feature = "gui")]
+    pub fn new_child_below(&mut self) -> usize {
+        let mut child: Node<Meta> = Node::default();
+        child.meta.pos = self
+            .meta
+            .rect()
+            .expand(PADDING)
+            .translate(egui::Vec2::new(0.0, self.meta.size.y + (PADDING * 2.0)))
+            .center();
+        self.add_child(child)
     }
 
     /// Helper for draw functions to draw just the text edit.
@@ -479,8 +823,31 @@ impl Node<Meta> {
         ui: &mut egui::Ui,
         highlighted: bool,
         lock_topology: bool,
+        layout: Layout,
     ) -> Option<Action> {
+        let mut repaint = false;
+        if let Some(positional) = layout.positional {
+            repaint = positional.apply(self, ui.ctx().screen_rect());
+            if repaint {
+                // Positions have changed, request a repaint.
+                ui.ctx().request_repaint();
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
         let frame = egui::Frame::window(&ui.ctx().style())
+            .fill(egui::Color32::from_gray(64));
+
+        #[cfg(debug_assertions)]
+        let frame = egui::Frame::window(&ui.ctx().style())
+            .stroke(if repaint {
+                egui::Stroke::new(
+                    self.meta.vel.abs().max_elem().min(PADDING).max(1.0),
+                    egui::Color32::RED,
+                )
+            } else {
+                egui::Stroke::NONE
+            })
             .fill(egui::Color32::from_gray(64));
 
         let title = self
@@ -490,33 +857,36 @@ impl Node<Meta> {
             .chain(std::iter::once('…'))
             .collect::<String>();
 
-        let mut response = egui::Window::new(&title)
+        let window = egui::Window::new(&title)
             .id(egui::Id::new(self.meta.id))
             .collapsible(true)
             .title_bar(true)
+            .default_open(!layout.auto_collapse || highlighted)
             .auto_sized()
-            .frame(frame)
-            .show(ui.ctx(), |ui| {
-                if highlighted {
-                    ui.set_opacity(1.5);
-                } else {
-                    ui.set_opacity(0.5);
-                }
+            .current_pos(self.meta.pos)
+            .frame(frame);
 
-                let mut action = None;
-                if !lock_topology {
-                    self.draw_buttons(ui, &mut action);
-                }
+        let mut response = window.show(ui.ctx(), |ui| {
+            if highlighted {
+                ui.set_opacity(1.5);
+            } else {
+                ui.set_opacity(0.5);
+            }
 
-                // We can still allow editing the text during generation since
-                // the pieces are still appended to the end. There is no
-                // ownership issue because of the immediate mode GUI and there
-                // are no topology changes so the new tokens are appended at the
-                // correct path.
-                self.draw_text_edit(ui, &mut action);
+            let mut action = None;
+            if !lock_topology {
+                self.draw_buttons(ui, &mut action);
+            }
 
-                action
-            });
+            // We can still allow editing the text during generation since
+            // the pieces are still appended to the end. There is no
+            // ownership issue because of the immediate mode GUI and there
+            // are no topology changes so the new tokens are appended at the
+            // correct path.
+            self.draw_text_edit(ui, &mut action);
+
+            action
+        });
 
         if let Some(response) = &mut response {
             if let Some(inner) = response.inner.as_mut() {
@@ -535,8 +905,13 @@ impl Node<Meta> {
             // Response from the *window*.
             let win = response.response;
 
-            self.meta.pos = win.rect.min;
-            self.meta.size = win.rect.size();
+            if win.dragged() || self.meta.pos == egui::Pos2::ZERO {
+                // Otherwise the rounding done by egui will cause the nodes to
+                // stand still because the velocity will be too small. We also
+                // set it in the case the node has not been positioned yet.
+                self.meta.pos = win.rect.min;
+                self.meta.size = win.rect.size();
+            }
 
             // Unwrap inner response from the closure and send it to the caller
             // letting the caller know if any action is needed.
@@ -553,20 +928,16 @@ impl Node<Meta> {
         ui: &mut egui::Ui,
         selected_path: Option<&[usize]>,
         lock_topology: bool,
+        layout: Layout,
         mode: crate::story::DrawMode,
     ) -> Option<PathAction> {
         use crate::story::DrawMode;
 
         match mode {
             DrawMode::Nodes => {
-                self.draw_nodes(ui, selected_path, lock_topology)
+                self.draw_nodes(ui, selected_path, lock_topology, layout)
             }
             DrawMode::Tree => {
-                let auto_collapse = ui
-                    .button("auto-collapse")
-                    .on_hover_text_at_pointer("Collapse all except selected.")
-                    .clicked();
-
                 egui::ScrollArea::vertical()
                     .show(ui, |ui| {
                         self.draw_tree(
@@ -575,13 +946,31 @@ impl Node<Meta> {
                             None, // current path (root is None)
                             0,    // depth
                             true, // selected
-                            auto_collapse,
                             lock_topology,
+                            layout,
                         )
                     })
                     .inner
             }
         }
+    }
+
+    /// Calculate (node_count, centroid, cumulative_mass) of the tree.
+    pub fn centroid(&self) -> (usize, egui::Pos2, f32) {
+        let mut count = 1;
+        let mut centroid = self.meta.pos;
+        let mut mass = self.meta.mass();
+
+        for child in self.children.iter() {
+            let (c, p, m) = child.centroid();
+            count += c;
+            centroid += p.to_vec2();
+            mass += m;
+        }
+
+        centroid = centroid / (count as f32);
+
+        (count, centroid, mass)
     }
 
     /// A helper function to draw the tree as collapsible headers.
@@ -603,8 +992,8 @@ impl Node<Meta> {
         current_path: Option<Vec<usize>>,
         depth: usize,
         selected: bool,
-        auto_collapse: bool,
         lock_topology: bool,
+        layout: Layout,
     ) -> Option<PathAction> {
         let title = self
             .text
@@ -616,7 +1005,7 @@ impl Node<Meta> {
         let open = if selected {
             Some(true)
         } else {
-            if auto_collapse {
+            if layout.auto_collapse {
                 Some(false)
             } else {
                 None
@@ -663,8 +1052,8 @@ impl Node<Meta> {
                         Some(child_path),
                         depth + 1,
                         selected,
-                        auto_collapse,
                         lock_topology,
+                        layout,
                     ) {
                         path_action = Some(a);
                     }
