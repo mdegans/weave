@@ -574,7 +574,7 @@ impl App {
                         }
                     }
                     RightSidebarPage::Tree => {
-                        let lock_topology = !self.generation_in_progress;
+                        let lock_topology = self.generation_in_progress;
                         let layout = self.settings.layout.clone();
                         if let Some(story) = self.story_mut() {
                             if let Some(action) =

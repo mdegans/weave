@@ -715,14 +715,20 @@ impl Node<Meta> {
     ) -> egui::Response {
         let resp = ui.horizontal(|ui| {
             let add_child = ui
-                .button("Add Child")
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/add_node.png"
+                )))
                 .on_hover_text_at_pointer("Add an empty child node.");
             if add_child.clicked() {
                 self.new_child_below();
             }
-            let delete = ui.button("Delete").on_hover_text_at_pointer(
-                "Delete this node and all its children.",
-            );
+            let delete = ui
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/delete_subtree.png"
+                )))
+                .on_hover_text_at_pointer(
+                    "Delete this node and all its children.",
+                );
             if delete.clicked() {
                 // Tell caller to delete this node.
                 *action = Some(Action {
@@ -732,9 +738,13 @@ impl Node<Meta> {
             }
             // FIXME: The terminology here could be improved. These are
             // confusing. We should find new names.
-            let continue_ = ui.button("Continue").on_hover_text_at_pointer(
-                "Continue generating the current node.",
-            );
+            let continue_ = ui
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/resume.png"
+                )))
+                .on_hover_text_at_pointer(
+                    "Continue generating the current node.",
+                );
             if continue_.clicked() {
                 // Tell caller to continue generation on this node.
                 *action = Some(Action {
@@ -742,9 +752,13 @@ impl Node<Meta> {
                     ..Default::default()
                 });
             }
-            let generate = ui.button("Generate").on_hover_text_at_pointer(
-                "Create a new node, select it, and continue generation.",
-            );
+            let generate = ui
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/generate.png"
+                )))
+                .on_hover_text_at_pointer(
+                    "Create a new node, select it, and continue generation.",
+                );
             if generate.clicked() {
                 // Tell caller to generate a new node.
                 *action = Some(Action {
