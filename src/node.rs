@@ -10,15 +10,21 @@ pub struct Piece {
 }
 
 /// Time step for the force-directed layout.
+// FIXME: This should be a parameter and based on the (previous) frame time
+// or perhaps the average over several frames.
 const TIME_STEP: f32 = 1.0 / 60.0;
 /// Damping factor for the force-directed layout.
-const DAMPING: f32 = 0.05;
+const DAMPING: f32 = 0.10;
 /// Boundary damping factor when nodes hit the boundaries and bounce back.
 const BOUNDARY_DAMPING: f32 = 0.5;
 /// Mass divisor for the force-directed layout.
 const MASS_DIVISOR: f32 = 1000.0;
 /// Padding for the bounding rectangle of the node. Also the max velocity.
 const PADDING: f32 = 32.0;
+/// Ratio of local to global centroid and mass. A ratio of 5 means that the
+/// nodes are 5 times more attracted to the local centroid than the global
+/// centroid. This also controls the repulsion from the parent node.
+const LOCAL_GLOBAL_RATIO: f32 = 5.0;
 
 static_assertions::assert_impl_all!(Piece: Send, Sync);
 
@@ -66,7 +72,7 @@ impl Meta {
     /// Get bounding rectangle (with padding)
     #[inline]
     pub fn rect(&self) -> egui::Rect {
-        egui::Rect::from_center_size(self.pos, self.size).expand(PADDING)
+        egui::Rect::from_min_size(self.pos, self.size).expand(PADDING)
     }
 
     /// Get mass of the node.
@@ -117,8 +123,8 @@ impl PositionalLayout {
     /// Force-directed layout default.
     pub const fn force_directed() -> Self {
         Self::ForceDirected {
-            repulsion: 50.0,
-            attraction: 1.0,
+            repulsion: 125.0,
+            attraction: 2.5,
             gravity: 1.0,
         }
     }
@@ -133,7 +139,7 @@ impl PositionalLayout {
             } => {
                 ui.horizontal(|ui| {
                     crate::icon!(ui, "../resources/expand.png", 24.0)
-                        | ui.add(egui::Slider::new(repulsion, 0.0..=100.0))
+                        | ui.add(egui::Slider::new(repulsion, 0.0..=250.0))
                             .on_hover_text_at_pointer(
                                 "How much children repel each other.",
                             )
@@ -141,7 +147,7 @@ impl PositionalLayout {
                 .response
                     | ui.horizontal(|ui| {
                         crate::icon!(ui, "../resources/contract.png", 24.0)
-                            | ui.add(egui::Slider::new(attraction, 0.0..=2.0))
+                            | ui.add(egui::Slider::new(attraction, 0.0..=5.0))
                                 .on_hover_text_at_pointer(
                                     "How much nodes attract by edges attract.",
                                 )
@@ -149,7 +155,7 @@ impl PositionalLayout {
                     .response
                     | ui.horizontal(|ui| {
                         crate::icon!(ui, "../resources/gravity.png", 24.0)
-                            | ui.add(egui::Slider::new(gravity, 0.0..=2.0))
+                            | ui.add(egui::Slider::new(gravity, 0.0..=5.0))
                                 .on_hover_text_at_pointer(
                                 "How much nodes are attracted to a weighted average of global and local centroids.",
                             )
@@ -162,8 +168,18 @@ impl PositionalLayout {
     /// Apply one iteration of force-directed layout to the node. Window
     /// `bounds` should be supplied to keep the nodes within the window.
     ///
+    /// If `debug` is supplied, the bounding rectangles of the nodes as well as
+    /// some other debug information will be drawn.
+    ///
     /// Returns true if redraw is needed.
-    pub fn apply(self, node: &mut Node<Meta>, bounds: egui::Rect) -> bool {
+    pub fn apply(
+        self,
+        node: &mut Node<Meta>,
+        bounds: egui::Rect,
+        debug: Option<&mut egui::Ui>,
+        global_centroid: Pos2,
+        global_cum_mass: f32,
+    ) -> bool {
         let mut redraw = false;
 
         match self {
@@ -178,28 +194,21 @@ impl PositionalLayout {
                 // is reversed. The nodes also bounce off the boundaries.
 
                 // We avoid quadratic complexity by only calculating the force
-                // between parent and siblings and siblings with each other.
+                // between node and siblings and siblings with each other.
                 // This means that forces between cousins are not calculated,
                 // but it's good enough for a tree.
 
                 // Thank you, Bing's Copilot for pointing out that I was missing
                 // the time step here. Also for pointing out that I was using
-                // the distance between child and parent to calculate force for
+                // the distance between child and node to calculate force for
                 // siblings below.
 
-                // The global centroid and cumulative mass of the tree. This and
-                // the local centroid and cumulative mass are used for gravity.
-                let mut global_centroid = Pos2::ZERO;
-                let mut global_cum_mass = 0.0;
-                if gravity > 0.0 {
-                    // Calculate the global centroid and mass of the tree.
-                    let (_, c, m) = node.centroid();
-                    global_centroid = c;
-                    global_cum_mass = m;
-                }
+                // There is also a global and local centroid and mass. The nodes
+                // are attracted to a weighted average of these centroids. This
+                // is to keep the tree centered and balanced.
 
-                let mut stack = vec![node];
-                while let Some(node) = stack.pop() {
+                let mut stack = vec![(node, None)];
+                while let Some((node, parent_meta)) = stack.pop() {
                     // Apply damping to the velocity.
                     node.meta.vel *= 1.0 - DAMPING;
 
@@ -207,9 +216,29 @@ impl PositionalLayout {
                     let mass = node.meta.mass();
                     let rect = node.meta.rect();
 
+                    // In debug mode, draw the bounding rectangle of the node.
+                    if let Some(ref ui) = debug {
+                        egui::Area::new(egui::Id::new(("area", node.meta.id)))
+                            .show(ui.ctx(), |ui| {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    0.0,
+                                    egui::Color32::from_rgba_premultiplied(
+                                        64, 0, 0, 128,
+                                    ),
+                                );
+                            });
+                    }
+
                     // The local centroid and cumulative mass (just self and
                     // children)
                     let mut centroid = node.meta.pos;
+                    // FIXME: when calculating the centroid we should also
+                    // take the mass into account. Currently we're just
+                    // averaging the positions which is wrong. It does converge
+                    // and it's good enough for now, but it's wrong. Thank you
+                    // ChatGPT 4o for pointing this out. A correct example
+                    // is in the `Node::centroid` method.
                     let mut cum_mass = mass;
 
                     // Child-to-child interactions. They repel each other. Since
@@ -239,16 +268,85 @@ impl PositionalLayout {
                             // Children always repel each other.
                             node.children[i].meta.vel += force * TIME_STEP;
                         }
+
+                        // Repel parent node (if any)
+                        if let Some(ref parent) = parent_meta {
+                            let parent: &Meta = parent;
+                            let dist =
+                                node.children[i].meta.pos.distance(parent.pos);
+                            let force = repulsion * a_mass * mass
+                                / dist.powi(2)
+                                * (node.children[i].meta.pos - parent.pos)
+                                    .normalized();
+                            // Repulsion from parent should be stronger. This
+                            // helps make the tree more balanced and tree-like.
+                            node.children[i].meta.vel +=
+                                force * LOCAL_GLOBAL_RATIO * TIME_STEP;
+                            cum_mass += parent.mass();
+                            centroid += parent.pos.to_vec2();
+                        }
+                    }
+
+                    // plus 2 for self and the parent node.
+                    centroid = centroid
+                        / (node.children.len() as f32
+                            + (if parent_meta.is_some() { 2.0 } else { 1.0 }));
+
+                    // In debug mode, draw the local centroid.
+                    if gravity > 0.0 {
+                        if let Some(ref ui) = debug {
+                            egui::Area::new(egui::Id::new((
+                                "centroid",
+                                node.meta.id,
+                            )))
+                            .show(
+                                ui.ctx(),
+                                |ui| {
+                                    ui.painter().circle(
+                                        centroid,
+                                        gravity * cum_mass / 10.0,
+                                        egui::Color32::from_rgba_premultiplied(
+                                            128, 0, 0, 128,
+                                        ),
+                                        egui::Stroke::NONE,
+                                    );
+                                },
+                            );
+                        }
                     }
 
                     // Our final centroid and cumulative mass is a weighted
                     // average of the local and global centroids and masses.
                     // This is hella approximate, but it works.
-                    centroid = centroid / (node.children.len() as f32 + 1.0);
-                    centroid =
-                        (centroid * 2.0 + global_centroid.to_vec2()) / 3.0;
-                    cum_mass = (cum_mass * 2.0 + global_cum_mass) / 3.0;
+                    centroid = (centroid * (LOCAL_GLOBAL_RATIO - 1.0)
+                        + global_centroid.to_vec2())
+                        / LOCAL_GLOBAL_RATIO;
+                    cum_mass = (cum_mass * (LOCAL_GLOBAL_RATIO - 1.0)
+                        + global_cum_mass)
+                        / LOCAL_GLOBAL_RATIO;
+
                     if gravity > 0.0 && !rect.contains(centroid) {
+                        // In debug builds, draw the final centroid
+                        if let Some(ref ui) = debug {
+                            egui::Area::new(egui::Id::new((
+                                "centroid",
+                                node.meta.id,
+                            )))
+                            .show(
+                                ui.ctx(),
+                                |ui| {
+                                    ui.painter().circle(
+                                        centroid,
+                                        gravity * cum_mass / 10.0,
+                                        egui::Color32::from_rgba_premultiplied(
+                                            128, 128, 0, 128,
+                                        ),
+                                        egui::Stroke::NONE,
+                                    );
+                                },
+                            );
+                        }
+
                         let dist = node.meta.pos.distance(centroid);
                         let force = gravity * mass * cum_mass / dist.powi(2)
                             * (centroid - node.meta.pos).normalized();
@@ -270,7 +368,8 @@ impl PositionalLayout {
                     // Node isn't moving, we don't need to update the position.
                     // If no nodes are moving, we don't need to redraw. At that
                     // point the simulation has converged.
-                    if node.meta.vel.normalized().max_elem() >= (DAMPING / 10.0)
+                    if node.meta.vel.normalized().abs().max_elem()
+                        >= (DAMPING / 10.0)
                     {
                         node.meta.vel = node.meta.vel.clamp(
                             egui::Vec2::splat(-PADDING),
@@ -284,10 +383,10 @@ impl PositionalLayout {
                         redraw = true;
                     }
 
-                    // Child-to-parent interactions. They attract each other.
+                    // Child-to-node interactions. They attract each other.
                     // They do have edges so they also repel each other.
                     for child in node.children.iter_mut() {
-                        // Attract to parent.
+                        // Attract to node.
                         let child_mass = child.meta.mass();
                         let child_rect = child.meta.rect();
                         let dist = node.meta.pos.distance(child.meta.pos);
@@ -307,7 +406,7 @@ impl PositionalLayout {
                         }
 
                         // Recurse into the child.
-                        stack.push(child);
+                        stack.push((child, Some(node.meta.clone())));
                     }
                 }
             }
@@ -625,6 +724,38 @@ impl Node<Meta> {
         let active_path = active_path.unwrap_or(&[]);
         let mut ret = None; // the default, meaning no action is needed.
 
+        // These are used for layout. We only calculate them if we need to.
+        let mut global_centroid = Pos2::ZERO;
+        let mut global_cum_mass = 0.0;
+        #[allow(unused_variables)] // because pos is only used in debug builds,
+        // but we still need the if block.
+        if let Some(pos) = layout.positional {
+            // Calculate the global centroid and mass of the tree.
+            let (_, global_centroid_, global_cum_mass_) = self.centroid();
+            global_centroid = global_centroid_;
+            global_cum_mass = global_cum_mass_;
+
+            // Debug build drawing.
+            #[cfg(debug_assertions)]
+            match pos {
+                PositionalLayout::ForceDirected { gravity, .. } => {
+                    egui::Area::new(egui::Id::new("global_centroid")).show(
+                        ui.ctx(),
+                        |ui| {
+                            ui.painter().circle(
+                                global_centroid,
+                                gravity * global_cum_mass / 10.0,
+                                egui::Color32::from_rgba_premultiplied(
+                                    0, 128, 0, 128,
+                                ),
+                                egui::Stroke::NONE,
+                            );
+                        },
+                    );
+                }
+            }
+        }
+
         // The current path in the tree.
         let mut current_path = Vec::new();
 
@@ -651,9 +782,14 @@ impl Node<Meta> {
             }
 
             // Draw the node and take any action in response to it's widgets.
-            if let Some(action) =
-                node.draw_one_node(ui, highlight_node, lock_topology, layout)
-            {
+            if let Some(action) = node.draw_one_node(
+                ui,
+                highlight_node,
+                lock_topology,
+                layout,
+                global_centroid,
+                global_cum_mass,
+            ) {
                 if action.delete {
                     // How to delete a node? We're taking a reference to the
                     // node so we can't delete it here. We can delete the
@@ -838,10 +974,25 @@ impl Node<Meta> {
         highlighted: bool,
         lock_topology: bool,
         layout: Layout,
+        global_centroid: Pos2,
+        global_cum_mass: f32,
     ) -> Option<Action> {
+        // because this is only used in debug builds.
+        #[allow(unused_assignments)]
         let mut repaint = false;
+        let screen_rect = ui.ctx().screen_rect();
         if let Some(positional) = layout.positional {
-            repaint = positional.apply(self, ui.ctx().screen_rect());
+            repaint = positional.apply(
+                self,
+                screen_rect,
+                if cfg!(debug_assertions) {
+                    Some(ui)
+                } else {
+                    None
+                },
+                global_centroid,
+                global_cum_mass,
+            );
             if repaint {
                 // Positions have changed, request a repaint.
                 ui.ctx().request_repaint();
@@ -877,6 +1028,7 @@ impl Node<Meta> {
             .title_bar(true)
             .default_open(!layout.auto_collapse || highlighted)
             .auto_sized()
+            .default_pos(self.meta.pos)
             .current_pos(self.meta.pos)
             .frame(frame);
 
@@ -919,7 +1071,7 @@ impl Node<Meta> {
             // Response from the *window*.
             let win = response.response;
 
-            if win.dragged() || self.meta.pos == egui::Pos2::ZERO {
+            if win.dragged() {
                 // Otherwise the rounding done by egui will cause the nodes to
                 // stand still because the velocity will be too small. We also
                 // set it in the case the node has not been positioned yet.
@@ -970,21 +1122,30 @@ impl Node<Meta> {
     }
 
     /// Calculate (node_count, centroid, cumulative_mass) of the tree.
+    /// Calculate (node_count, centroid, cumulative_mass) of the tree.
     pub fn centroid(&self) -> (usize, egui::Pos2, f32) {
+        // Thank you ChatGPT 4o for pointing out that I was missing the mass
+        // here. I was calculating the centroid, I wasn't taking the mass into
+        // account. This is a weighted centroid calculation.
         let mut count = 1;
-        let mut centroid = self.meta.pos;
+        let mut weighted_centroid_sum =
+            self.meta.pos.to_vec2() * self.meta.mass();
         let mut mass = self.meta.mass();
 
         for child in self.children.iter() {
-            let (c, p, m) = child.centroid();
+            let (c, child_centroid, child_mass) = child.centroid();
             count += c;
-            centroid += p.to_vec2();
-            mass += m;
+            weighted_centroid_sum += child_centroid.to_vec2() * child_mass;
+            mass += child_mass;
         }
 
-        centroid = centroid / (count as f32);
+        let centroid = if mass > 0.0 {
+            weighted_centroid_sum / mass
+        } else {
+            weighted_centroid_sum
+        };
 
-        (count, centroid, mass)
+        (count, centroid.to_pos2(), mass)
     }
 
     /// A helper function to draw the tree as collapsible headers.
