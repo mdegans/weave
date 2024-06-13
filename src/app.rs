@@ -3,6 +3,7 @@ mod settings;
 use {
     self::settings::{BackendOptions, Settings},
     crate::{
+        button,
         node::{Action, Meta, Node},
         story::{DrawMode, Story},
     },
@@ -21,6 +22,9 @@ struct LeftSidebar {
     pub title_buf: String,
     pub page: SidebarPage,
     pub visible: bool,
+    /// Whether the story title is being edited. If this is true, the story
+    /// title widget is a text edit widget. Otherwise, it is a label.
+    pub editing_active_title: bool,
 }
 
 #[derive(Default, PartialEq)]
@@ -91,6 +95,7 @@ impl From<String> for Error {
 pub struct App {
     active_story: Option<usize>,
     stories: Vec<Story>,
+    trash: Vec<Story>,
     settings: Settings,
     left_sidebar: LeftSidebar,
     right_sidebar: RightSidebar,
@@ -144,6 +149,31 @@ impl App {
             })
             .unwrap_or_default();
 
+        let trash = cc
+            .storage
+            .map(|storage| {
+                storage
+                    .get_string("trash")
+                    .and_then(|s| {
+                        log::debug!("Loading trash: {}", s);
+                        match serde_json::from_str(&s) {
+                            Ok(trash) => Some(trash),
+                            Err(e) => {
+                                errors.push(
+                                    format!(
+                                        "Failed to load trash because: {}",
+                                        e
+                                    )
+                                    .into(),
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
         let settings = cc
             .storage
             .map(|storage| {
@@ -174,6 +204,7 @@ impl App {
             stories,
             settings,
             active_story: None,
+            trash,
             ..Default::default()
         };
 
@@ -718,25 +749,47 @@ impl App {
             ui.separator();
         }
         let mut delete = None;
-        for (i, story) in self.stories.iter().enumerate() {
+        for (i, story) in self.stories.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                if ui.button("X").clicked() {
+                let active_story =
+                    self.active_story.is_some_and(|idx| idx == i);
+                if button!(ui, "../resources/delete.png").clicked() {
                     delete = Some(i);
                 }
-                if ui.button(&story.title).clicked() {
-                    self.active_story = Some(i);
+                if active_story {
+                    if self.left_sidebar.editing_active_title {
+                        ui.text_edit_singleline(&mut story.title);
+                        if ui
+                            .add(egui::Button::image(egui::include_image!(
+                                "../resources/check.png"
+                            )))
+                            .clicked()
+                        {
+                            self.left_sidebar.editing_active_title = false;
+                        }
+                    } else if ui.button(&story.title).clicked() {
+                        self.left_sidebar.editing_active_title = true;
+                    }
+                } else {
+                    if ui.button(&story.title).clicked() {
+                        self.active_story = Some(i);
+                        self.left_sidebar.editing_active_title = false;
+                    }
                 }
             });
         }
         if let Some(i) = delete {
-            self.stories.remove(i);
+            self.trash.push(self.stories.remove(i));
             if self.active_story == Some(i) {
                 self.active_story = None;
             }
         }
 
         ui.horizontal(|ui| {
-            if ui.button("New").clicked() {
+            if button!(ui, "../resources/add.png")
+                .on_hover_text_at_pointer("Add a story.")
+                .clicked()
+            {
                 let title = self.left_sidebar.title_buf.clone();
                 let author = self.settings.default_author.clone();
                 self.new_story(title, author);
@@ -744,6 +797,47 @@ impl App {
             }
             ui.text_edit_singleline(&mut self.left_sidebar.title_buf);
         });
+
+        let mut restore = None;
+        delete = None;
+        if !self.trash.is_empty() {
+            // FIXME: This should be bottom aligned. I tried a TopBottomPanel
+            // but it draws on *top* of the central panel which is not what we
+            // want. We want it to be below the stories list at the bottom of
+            // the sidebar.
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Trash");
+                if button!(ui, "../resources/delete_forever.png")
+                    .on_hover_text_at_pointer("Empty trash permanantly.")
+                    .clicked()
+                {
+                    self.trash.clear();
+                }
+            });
+            ui.separator();
+            for (i, story) in self.trash.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if button!(ui, "../resources/restore.png")
+                        .on_hover_text_at_pointer("Restore story.")
+                        .clicked()
+                    {
+                        restore = Some(i);
+                    }
+                    if button!(ui, "../resources/delete_forever.png")
+                        .on_hover_text_at_pointer("Delete story permanantly.")
+                        .clicked()
+                    {
+                        delete = Some(i);
+                    }
+                    ui.label(&story.title);
+                });
+            }
+        }
+
+        if let Some(i) = restore {
+            self.stories.push(self.trash.remove(i));
+        }
     }
 
     /// Draw the central panel.
@@ -1259,12 +1353,15 @@ impl eframe::App for App {
         let serialized_stories = serde_json::to_string(&self.stories).unwrap();
         let serialized_settings =
             serde_json::to_string(&self.settings).unwrap();
+        let serialized_trash = serde_json::to_string(&self.trash).unwrap();
 
         log::debug!("Saving stories: {}", serialized_stories);
         log::debug!("Saving settings: {}", serialized_settings);
+        log::debug!("Saving trash: {}", serialized_trash);
 
         storage.set_string("stories", serialized_stories);
         storage.set_string("settings", serialized_settings);
+        storage.set_string("trash", serialized_trash);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
