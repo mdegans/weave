@@ -838,6 +838,9 @@ impl App {
         if let Some(i) = restore {
             self.stories.push(self.trash.remove(i));
         }
+        if let Some(i) = delete {
+            self.trash.remove(i);
+        }
     }
 
     /// Draw the central panel.
