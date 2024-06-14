@@ -110,14 +110,12 @@ pub struct App {
     #[cfg(feature = "openai")]
     openai_worker: crate::openai::Worker,
     #[cfg(feature = "generate")]
-    pub(crate) generation_in_progress: bool,
+    pub(crate) generation_ui_locked: bool,
     #[cfg(not(target_arch = "wasm32"))]
     save_dialog: Option<egui_file::FileDialog>,
     #[cfg(not(target_arch = "wasm32"))]
     saving_txt: bool,
 }
-
-// {"default_author":"","prompt_include_authors":false,"prompt_include_title":false,"selected_generative_backend":"OpenAI","backend_options":{"DramaLlama":{"DramaLlama":{"model":"","predict_options":{"n":512,"seed":1337,"stop_sequences":[],"stop_strings":[],"regex_stop_sequences":[],"sample_options":{"modes":[],"repetition":null}}}},"OpenAI":{"OpenAI":{"settings":{"openai_api_key":"hidden in keyring","chat_arguments":{"model":"gpt-3.5-turbo","messages":[{"role":"system","content":"A user and an assistant are collaborating on a story. The user starts by writing a paragraph, then the assistant writes a paragraph, and so on. Both will be credited for the end result.'"},{"role":"user","content":"Hi, GPT! Let's write a story together."},{"role":"assistant","content":"Sure, I'd love to help. How about you start us off? I'll try to match your tone and style."}],"temperature":1.0,"top_p":1.0,"n":null,"stop":null,"max_tokens":1024,"presence_penalty":0.0,"frequency_penalty":0.0,"user":null}}}}}}
 
 impl App {
     pub fn new<'s>(cc: &eframe::CreationContext<'s>) -> Self {
@@ -244,12 +242,14 @@ impl App {
             "Starting generative backend: {}",
             self.settings.selected_generative_backend
         );
+
         self.settings.setup();
 
         match self.settings.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             settings::BackendOptions::DramaLlama { model, .. } => {
-                self.drama_llama_worker.start(model.clone(), context)?;
+                self.drama_llama_worker.start(context)?;
+                self.drama_llama_worker.load_model(model.clone())?;
             }
             #[cfg(feature = "openai")]
             settings::BackendOptions::OpenAI { settings } => {
@@ -281,7 +281,7 @@ impl App {
     pub fn start_generation(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.generation_in_progress {
+        if self.generation_ui_locked {
             // If this happens, some UI element is not locked properly.
             panic!("Generation already in progress. This is a bug. Please report it.");
         }
@@ -333,10 +333,10 @@ impl App {
                         Ok(_) => {
                             // This flag is used to lock the UI while generation
                             // is in progress.
-                            self.generation_in_progress = true;
+                            self.generation_ui_locked = true;
                         }
                         Err(e) => {
-                            self.generation_in_progress = false;
+                            self.generation_ui_locked = false;
                             return Err(e.into());
                         }
                     }
@@ -363,7 +363,7 @@ impl App {
 
                     match self.openai_worker.predict(options) {
                         Ok(_) => {
-                            self.generation_in_progress = true;
+                            self.generation_ui_locked = true;
                         }
                         Err(e) => {
                             if e.is_disconnected() {
@@ -372,7 +372,7 @@ impl App {
                                 // error like a bad API key. No matter what, we
                                 // should unlock the UI so the worker can be
                                 // restarted.
-                                self.generation_in_progress = false;
+                                self.generation_ui_locked = false;
                             } else {
                                 // Channel is full. This is bad.
                                 panic!("OpenAI worker command channel is full. This is a bug. Please report this: {}", e)
@@ -443,7 +443,7 @@ impl App {
                 // fix this is just to make such actions impossible so we'll
                 // replace the sidebar with generation controls.
                 #[cfg(feature = "generate")]
-                if self.generation_in_progress {
+                if self.generation_ui_locked {
                     ui.heading("Generating...").on_hover_text_at_pointer(
                         "This might take a while the first time, especially with large local models."
                     );
@@ -605,7 +605,7 @@ impl App {
                         }
                     }
                     RightSidebarPage::Tree => {
-                        let lock_topology = self.generation_in_progress;
+                        let lock_topology = self.generation_ui_locked;
                         let layout = self.settings.layout.clone();
                         if let Some(story) = self.story_mut() {
                             if let Some(action) =
@@ -688,7 +688,7 @@ impl App {
     }
 
     /// Handle settings action.
-    pub fn handle_settings_action(
+    pub(crate) fn handle_settings_action(
         &mut self,
         action: settings::Action,
         context: &egui::Context,
@@ -736,6 +736,21 @@ impl App {
                     }
                 }
             },
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            settings::Action::DramaLlama(request) => {
+                match self.drama_llama_worker.send(request) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.errors.push(
+                            format!(
+                                "Failed to send request to drama llama worker: {:?}",
+                                e.0
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -870,7 +885,7 @@ impl App {
             // solution might perform better as well and I have some experience
             // with it.
             // In the meantime, the windows are, at least, collapsible.
-            let generation_in_progress = self.generation_in_progress;
+            let generation_in_progress = self.generation_ui_locked;
             let layout = self.settings.layout.clone();
             let mut update_right_sidebar = false;
             if let Some(story) = self.story_mut() {
@@ -944,68 +959,129 @@ impl App {
     fn update_generation(&mut self, new_pieces: &mut Vec<String>) {
         use settings::GenerativeBackend;
 
-        if !self.generation_in_progress {
-            return;
-        }
-
         match self.settings.selected_generative_backend {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             GenerativeBackend::DramaLlama => {
                 // Handle responses from the drama llama worker.
-                match self.drama_llama_worker.try_recv() {
-                    Some(Err(e)) => match e {
-                        std::sync::mpsc::TryRecvError::Empty => {
-                            // The channel is empty. This is normal.
-                        }
-                        std::sync::mpsc::TryRecvError::Disconnected => {
-                            eprintln!(
-                            "`drama_llama` worker disconnected unexpectedly."
-                        );
-                            // This should not happen, but it can if the worker
-                            // panics. This indicates a bug in `drama_llama`.
-                            if let Err(err) = self.drama_llama_worker.shutdown()
-                            {
-                                eprintln!(
-                                    "Worker thread died because: {:?}",
-                                    err
-                                );
+                while let Some(result) = self.drama_llama_worker.try_recv() {
+                    match result {
+                        Err(e) => {
+                            match &e {
+                            crate::drama_llama::Error::LoadError { .. } => {
+                                self.settings.loading_model = None;
+                                if let Some(settings) = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                {
+                                    if let settings::BackendOptions::DramaLlama {
+                                        model,
+                                        ..
+                                    } = settings
+                                    {
+                                        *model = "".into();
+                                    }
+                                }
                             }
-                            self.generation_in_progress = false;
+                            crate::drama_llama::Error::ContextTooLarge {
+                                supported,
+                                ..
+                            } => {
+                                // We shouldn't reach here because we check
+                                // the context size before starting generation.
+                                if let settings::BackendOptions::DramaLlama {
+                                    predict_options,
+                                    max_context_size,
+                                    ..
+                                } = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                    .unwrap()
+                                {
+                                    let limit = (*supported).max(512);
+                                    *max_context_size = limit;
+                                    predict_options.n =
+                                        limit.try_into().unwrap();
+                                }
+                            }
+                            _ => {}
                         }
-                    },
-                    Some(Ok(response)) => match response {
-                        // The worker has generated a new piece of text, we add
-                        // it to the story.
-                        crate::drama_llama::Response::Predicted { piece } => {
-                            new_pieces.push(piece);
-                            self.right_sidebar.refresh_story();
+                            // Something went wrong. We can unlock the UI now.
+                            self.generation_ui_locked = false;
+                            self.errors.push(e.to_string().into());
                         }
-                        crate::drama_llama::Response::Done => {
-                            // Trim whitespace from the end of the story. The
-                            // Predictor currently keeps any end sequence, which
-                            // might be whitespace.
-                            // TODO: add a setting to control this behavior in
-                            // `drama_llama`
-                            if let Some(story) = self.story_mut() {
-                                story.head_mut().trim_end_whitespace();
+                        Ok(response) => match response {
+                            // The worker has generated a new piece of text, we add
+                            // it to the story.
+                            crate::drama_llama::Response::Predicted {
+                                piece,
+                            } => {
+                                new_pieces.push(piece);
                                 self.right_sidebar.refresh_story();
                             }
-                            // We can unlock the UI now.
-                            self.generation_in_progress = false;
-                        }
-                        crate::drama_llama::Response::Busy { request } => {
-                            // This might happen because of data races, but really
-                            // shouldn't.
-                            // TODO: make a macro for all these error messages.
-                            self.errors.push(format!(
+                            crate::drama_llama::Response::Done => {
+                                // Trim whitespace from the end of the story. The
+                                // Predictor currently keeps any end sequence, which
+                                // might be whitespace.
+                                // TODO: add a setting to control this behavior in
+                                // `drama_llama`
+                                if let Some(story) = self.story_mut() {
+                                    story.head_mut().trim_end_whitespace();
+                                    self.right_sidebar.refresh_story();
+                                }
+                                // We can unlock the UI now. Worker is done with
+                                // generation.
+                                self.generation_ui_locked = false;
+                            }
+                            crate::drama_llama::Response::Busy { request } => {
+                                // This might happen because of data races, but really
+                                // shouldn't.
+                                // TODO: make a macro for all these error messages.
+                                self.errors.push(format!(
                                 "Unexpected request sent to worker. Report this please: {:?}",
                                 request
                             ).into());
-                        }
-                    },
-                    None => {
-                        // Worker is dead.
-                        self.generation_in_progress = false;
+                            }
+                            crate::drama_llama::Response::LoadedModel {
+                                model: new_model,
+                                max_context_size: new_max_context_size,
+                                metadata: new_metadata,
+                            } => {
+                                // We can unlock the UI. The model is loaded.
+                                self.settings.loading_model = None;
+                                self.generation_ui_locked = false;
+                                if let Some(settings) = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                {
+                                    if let settings::BackendOptions::DramaLlama {
+                                    model,
+                                    max_context_size,
+                                    predict_options,
+                                    metadata,
+                                    ..
+                                } = settings
+                                {
+                                    *metadata = Some(new_metadata);
+                                    *model = new_model;
+                                    *max_context_size =
+                                        new_max_context_size.max(512);
+                                    predict_options.n = predict_options.n.min(
+                                        (*max_context_size).try_into().unwrap(),
+                                    );
+                                }
+                                }
+                            }
+                            crate::drama_llama::Response::Error { .. } => {
+                                // FIXME: we could remove this by making the
+                                // receiver take a Result. That would be cleaner.
+                                unreachable!(
+                                    "Error responses are handled in try_recv."
+                                );
+                            }
+                        },
                     }
                 }
             }
@@ -1025,7 +1101,7 @@ impl App {
                         if let Some(story) = self.story_mut() {
                             story.head_mut().trim_end_whitespace();
                         }
-                        self.generation_in_progress = false;
+                        self.generation_ui_locked = false;
                     }
                     crate::openai::Response::Busy { request } => {
                         self.errors.push(format!(
@@ -1048,7 +1124,7 @@ impl App {
                 },
                 None => {
                     // Worker is dead.
-                    self.generation_in_progress = false;
+                    self.generation_ui_locked = false;
                 }
             },
             #[allow(unreachable_patterns)] // because conditional compilation
@@ -1234,8 +1310,7 @@ impl App {
                 // this code ensures that the author exists first because in our
                 // API, a panic will occur if the author does not exist. (We
                 // will probably change this in the future.)
-                if !self.generation_in_progress
-                    && input.key_pressed(egui::Key::N)
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::N)
                 {
                     let author = self.settings.default_author.clone();
                     if let Some(story) = self.story_mut() {
@@ -1245,7 +1320,7 @@ impl App {
                 }
                 // Command + S: Save story to JSON.
                 #[cfg(not(target_arch = "wasm32"))]
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && self.active_story.is_some()
                     && input.key_pressed(egui::Key::S)
                 {
@@ -1253,13 +1328,12 @@ impl App {
                 }
                 // Command + O: Load story from JSON.
                 #[cfg(not(target_arch = "wasm32"))]
-                if !self.generation_in_progress
-                    && input.key_pressed(egui::Key::O)
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::O)
                 {
                     self.load_from_json();
                 }
                 // Command + DELETE: Delete selected node.
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && input.key_pressed(egui::Key::Delete)
                 {
                     if let Some(story) = self.story_mut() {
@@ -1267,7 +1341,7 @@ impl App {
                     }
                 }
                 // Command + ,: Cut selected node.
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && input.key_pressed(egui::Key::Comma)
                 {
                     if let Some(story) = self.story_mut() {
@@ -1275,7 +1349,7 @@ impl App {
                     }
                 }
                 // Command + .: Paste node from clipboard.
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && input.key_pressed(egui::Key::Period)
                 {
                     let node = self.node_clipboard.take();
@@ -1294,21 +1368,20 @@ impl App {
             if input.modifiers.command && input.modifiers.shift {
                 // Command + Shift + S: Export story to Markdown.
                 #[cfg(not(target_arch = "wasm32"))]
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && self.active_story.is_some()
                     && input.key_pressed(egui::Key::S)
                 {
                     self.export_to_markdown();
                 }
                 // Command + Shift + N: New story with the default author.
-                if !self.generation_in_progress
-                    && input.key_pressed(egui::Key::N)
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::N)
                 {
                     let author = self.settings.default_author.clone();
                     self.new_story("Untitled".to_string(), author);
                 }
                 // Command + Shift + DELETE: Delete active story.
-                if !self.generation_in_progress
+                if !self.generation_ui_locked
                     && input.key_pressed(egui::Key::Delete)
                 {
                     if let Some(i) = self.active_story {

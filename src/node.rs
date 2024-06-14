@@ -405,7 +405,8 @@ impl PositionalLayout {
                             child.meta.vel *= BOUNDARY_DAMPING;
                         }
 
-                        // Recurse into the child.
+                        // Recurse into the child, providing this node's
+                        // metadata as the parent metadata.
                         stack.push((child, Some(node.meta.clone())));
                     }
                 }
@@ -1071,7 +1072,9 @@ impl Node<Meta> {
             // Response from the *window*.
             let win = response.response;
 
-            if win.dragged() {
+            // || Rect::ZERO because the initial size is zero and we need to
+            // fix it. This is only needed for the first frame.
+            if win.dragged() || win.rect == egui::Rect::ZERO {
                 // Otherwise the rounding done by egui will cause the nodes to
                 // stand still because the velocity will be too small. We also
                 // set it in the case the node has not been positioned yet.
