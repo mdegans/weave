@@ -28,6 +28,24 @@ const LOCAL_GLOBAL_RATIO: f32 = 5.0;
 
 static_assertions::assert_impl_all!(Piece: Send, Sync);
 
+/// Constrain one rect `a` so it's inside another rect `b`.
+fn constrain(mut a: egui::Rect, b: egui::Rect) -> egui::Rect {
+    if a.left() < b.left() {
+        a = a.translate(egui::Vec2::new(b.left() - a.left(), 0.0));
+    }
+    if a.right() > b.right() {
+        a = a.translate(egui::Vec2::new(b.right() - a.right(), 0.0));
+    }
+    if a.top() < b.top() {
+        a = a.translate(egui::Vec2::new(0.0, b.top() - a.top()));
+    }
+    if a.bottom() > b.bottom() {
+        a = a.translate(egui::Vec2::new(0.0, b.bottom() - a.bottom()));
+    }
+
+    a
+}
+
 /// Node data. Contains a paragraph within a story tree.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Node<T> {
@@ -1031,6 +1049,7 @@ impl Node<Meta> {
             .auto_sized()
             .default_pos(self.meta.pos)
             .current_pos(self.meta.pos)
+            .constrain_to(ui.ctx().screen_rect())
             .frame(frame);
 
         let mut response = window.show(ui.ctx(), |ui| {
@@ -1068,19 +1087,34 @@ impl Node<Meta> {
         // If the window has been interacted with, we need to store the new size
         // and position. We also need to forward any inner activation response
         // from the closure above to the caller.
-        if let Some(response) = response {
+        let ret = if let Some(response) = response {
             // Response from the *window*.
             let win = response.response;
 
-            self.meta.pos = win.rect.min;
+            // We set the new size unconditionally but only the position if the
+            // window is being dragged. If we set the position unconditionally,
+            // egui will round the positions which breaks the force-directed
+            // layout. Nodes don't move unless the force is very strong.
             self.meta.size = win.rect.size();
+            if win.is_pointer_button_down_on() {
+                self.meta.pos = win.rect.min;
+            }
 
             // Unwrap inner response from the closure and send it to the caller
             // letting the caller know if any action is needed.
             response.inner.unwrap_or(None)
         } else {
             None
-        }
+        };
+
+        // We need to clamp the rect to the screen. This is because the user
+        // can drag the window + padding outside the screen.
+        let rect = constrain(self.meta.rect(), screen_rect).shrink(PADDING);
+
+        self.meta.pos = rect.min;
+        self.meta.size = rect.size();
+
+        ret
     }
 
     /// Draw the tree.
