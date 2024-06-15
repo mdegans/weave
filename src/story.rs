@@ -166,16 +166,21 @@ impl Story {
         lock_topology: bool,
         layout: crate::node::Layout,
         mode: DrawMode,
+        time_step: f32,
     ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
 
         let selected_path = self.active_path.as_ref().map(|v| v.as_slice());
 
         // Draw, and update active path if changed.
-        if let Some(PathAction { path, mut action }) =
-            self.root
-                .draw(ui, selected_path, lock_topology, layout, mode)
-        {
+        if let Some(PathAction { path, mut action }) = self.root.draw(
+            ui,
+            selected_path,
+            lock_topology,
+            layout,
+            mode,
+            time_step,
+        ) {
             if !lock_topology {
                 // Any action unless we're locked should update the active path.
                 self.active_path = Some(path);

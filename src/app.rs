@@ -42,7 +42,6 @@ impl RightSidebarPage {
         }
     }
 }
-
 #[derive(Default)]
 struct RightSidebar {
     pub text: Option<String>,
@@ -99,6 +98,8 @@ pub struct App {
     settings: Settings,
     left_sidebar: LeftSidebar,
     right_sidebar: RightSidebar,
+    last_frame_time: f64,
+    time_step: f64,
     /// Temporary node storage for copy/paste.
     node_clipboard: Option<Node<Meta>>,
     /// Modal error messages.
@@ -197,12 +198,19 @@ impl App {
             })
             .unwrap_or_default();
 
+        let mut last_frame_time = 0.0;
+        ctx.input(|state| {
+            last_frame_time = state.time;
+        });
+
         #[allow(unused_mut)]
         let mut new = Self {
             stories,
             settings,
             active_story: None,
             trash,
+            last_frame_time,
+            time_step: 1.0 / 60.0,
             ..Default::default()
         };
 
@@ -216,6 +224,19 @@ impl App {
         new
     }
 
+    /// Update frame time.
+    pub fn update_time_step(&mut self, ctx: &egui::Context) {
+        let mut this_frame_time = 0.0;
+        ctx.input(|state| {
+            this_frame_time = state.time;
+        });
+        self.time_step = (self.time_step
+            + (this_frame_time - self.last_frame_time).max(1.0 / 15.0))
+            / 2.0;
+        self.last_frame_time = this_frame_time;
+    }
+
+    /// Add a new story.
     pub fn new_story(&mut self, title: String, author: String) {
         self.stories.push(Story::new(title, author));
         self.active_story = Some(self.stories.len() - 1);
@@ -512,6 +533,9 @@ impl App {
         // function is running since it is not accessible from any other
         // thread.
 
+        // Time step for custom simulations and animations.
+        let time_step = self.time_step as f32;
+
         egui::SidePanel::right("right_sidebar")
             .default_width(200.0)
             .resizable(true)
@@ -609,7 +633,7 @@ impl App {
                         let layout = self.settings.layout.clone();
                         if let Some(story) = self.story_mut() {
                             if let Some(action) =
-                                story.draw(ui, lock_topology, layout, DrawMode::Tree)
+                                story.draw(ui, lock_topology, layout, DrawMode::Tree, time_step)
                             {
                                 self.handle_story_action(action);
                             }
@@ -864,6 +888,8 @@ impl App {
         ctx: &eframe::egui::Context,
         _frame: &mut eframe::Frame,
     ) {
+        let time_step = self.time_step as f32;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut new_pieces = Vec::new();
 
@@ -901,6 +927,7 @@ impl App {
                     generation_in_progress,
                     layout,
                     DrawMode::Nodes,
+                    time_step,
                 ) {
                     self.handle_story_action(action)
                 }
@@ -1407,6 +1434,7 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
+        self.update_time_step(ctx);
         if self.handle_errors(ctx) {
             // An error message is displayed. We skip the rest of the UI. This
             // is how we do "modal" in egui.

@@ -9,10 +9,6 @@ pub struct Piece {
     pub end: usize,
 }
 
-/// Time step for the force-directed layout.
-// FIXME: This should be a parameter and based on the (previous) frame time
-// or perhaps the average over several frames.
-const TIME_STEP: f32 = 1.0 / 60.0;
 /// Damping factor for the force-directed layout.
 const DAMPING: f32 = 0.10;
 /// Boundary damping factor when nodes hit the boundaries and bounce back.
@@ -126,6 +122,8 @@ pub enum PositionalLayout {
         /// How much nodes should be attracted to the centroid. This is inverse
         /// square.
         gravity: f32,
+        /// How fast the layout should converge.
+        speed: f32,
     },
 }
 
@@ -144,6 +142,7 @@ impl PositionalLayout {
             repulsion: 125.0,
             attraction: 2.5,
             gravity: 1.0,
+            speed: 1.0,
         }
     }
 
@@ -154,6 +153,7 @@ impl PositionalLayout {
                 repulsion,
                 attraction,
                 gravity,
+                speed,
             } => {
                 ui.horizontal(|ui| {
                     crate::icon!(ui, "../resources/expand.png", 24.0)
@@ -179,6 +179,13 @@ impl PositionalLayout {
                             )
                     })
                     .response
+                    | ui.horizontal(|ui| {
+                        crate::icon!(ui, "../resources/speed.png", 24.0)
+                            | ui.add(egui::Slider::new(speed, 0.0..=10.0))
+                                .on_hover_text_at_pointer(
+                                "How fast the layout should converge. Increasing this can help with many small nodes.",
+                            )
+                    }).response
             }
         }
     }
@@ -197,6 +204,7 @@ impl PositionalLayout {
         debug: Option<&mut egui::Ui>,
         global_centroid: Pos2,
         global_cum_mass: f32,
+        mut time_step: f32,
     ) -> bool {
         let mut redraw = false;
 
@@ -205,6 +213,7 @@ impl PositionalLayout {
                 repulsion,
                 attraction,
                 gravity,
+                speed,
             } => {
                 // The general idea is for nodes to repel each other with
                 // inverse square force and attract to each other with linear
@@ -224,6 +233,8 @@ impl PositionalLayout {
                 // There is also a global and local centroid and mass. The nodes
                 // are attracted to a weighted average of these centroids. This
                 // is to keep the tree centered and balanced.
+
+                time_step *= speed;
 
                 let mut stack = vec![(node, None)];
                 while let Some((node, parent_meta)) = stack.pop() {
@@ -284,7 +295,7 @@ impl PositionalLayout {
                                     .normalized();
 
                             // Children always repel each other.
-                            node.children[i].meta.vel += force * TIME_STEP;
+                            node.children[i].meta.vel += force * time_step;
                         }
 
                         // Repel parent node (if any)
@@ -299,7 +310,7 @@ impl PositionalLayout {
                             // Repulsion from parent should be stronger. This
                             // helps make the tree more balanced and tree-like.
                             node.children[i].meta.vel +=
-                                force * LOCAL_GLOBAL_RATIO * TIME_STEP;
+                                force * LOCAL_GLOBAL_RATIO * time_step;
                             cum_mass += parent.mass();
                             centroid += parent.pos.to_vec2();
                         }
@@ -368,7 +379,7 @@ impl PositionalLayout {
                         let dist = node.meta.pos.distance(centroid);
                         let force = gravity * mass * cum_mass / dist.powi(2)
                             * (centroid - node.meta.pos).normalized();
-                        node.meta.vel += force * TIME_STEP;
+                        node.meta.vel += force * time_step;
                     }
 
                     // Bounce off the boundaries. Thanks to Bing's Copilot for
@@ -417,9 +428,9 @@ impl PositionalLayout {
                         let force = attraction_force - repulsion_force;
 
                         if !rect.intersects(child_rect) {
-                            child.meta.vel += force * TIME_STEP;
+                            child.meta.vel += force * time_step;
                         } else {
-                            child.meta.vel -= force * TIME_STEP;
+                            child.meta.vel -= force * time_step;
                             child.meta.vel *= BOUNDARY_DAMPING;
                         }
 
@@ -739,6 +750,7 @@ impl Node<Meta> {
         active_path: Option<&[usize]>,
         lock_topology: bool,
         layout: Layout,
+        time_step: f32,
     ) -> Option<PathAction> {
         let active_path = active_path.unwrap_or(&[]);
         let mut ret = None; // the default, meaning no action is needed.
@@ -808,6 +820,7 @@ impl Node<Meta> {
                 layout,
                 global_centroid,
                 global_cum_mass,
+                time_step,
             ) {
                 if action.delete {
                     // How to delete a node? We're taking a reference to the
@@ -995,6 +1008,7 @@ impl Node<Meta> {
         layout: Layout,
         global_centroid: Pos2,
         global_cum_mass: f32,
+        time_step: f32,
     ) -> Option<Action> {
         // because this is only used in debug builds.
         #[allow(unused_assignments)]
@@ -1011,6 +1025,7 @@ impl Node<Meta> {
                 },
                 global_centroid,
                 global_cum_mass,
+                time_step,
             );
             if repaint {
                 // Positions have changed, request a repaint.
@@ -1126,13 +1141,18 @@ impl Node<Meta> {
         lock_topology: bool,
         layout: Layout,
         mode: crate::story::DrawMode,
+        time_step: f32,
     ) -> Option<PathAction> {
         use crate::story::DrawMode;
 
         match mode {
-            DrawMode::Nodes => {
-                self.draw_nodes(ui, selected_path, lock_topology, layout)
-            }
+            DrawMode::Nodes => self.draw_nodes(
+                ui,
+                selected_path,
+                lock_topology,
+                layout,
+                time_step,
+            ),
             DrawMode::Tree => {
                 egui::ScrollArea::vertical()
                     .show(ui, |ui| {
