@@ -1072,15 +1072,8 @@ impl Node<Meta> {
             // Response from the *window*.
             let win = response.response;
 
-            // || Rect::ZERO because the initial size is zero and we need to
-            // fix it. This is only needed for the first frame.
-            if win.dragged() || win.rect == egui::Rect::ZERO {
-                // Otherwise the rounding done by egui will cause the nodes to
-                // stand still because the velocity will be too small. We also
-                // set it in the case the node has not been positioned yet.
-                self.meta.pos = win.rect.min;
-                self.meta.size = win.rect.size();
-            }
+            self.meta.pos = win.rect.min;
+            self.meta.size = win.rect.size();
 
             // Unwrap inner response from the closure and send it to the caller
             // letting the caller know if any action is needed.
