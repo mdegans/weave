@@ -64,6 +64,10 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
 
 # Notable issues
 
+- This is **alpha software**. It may crash. It does auto-save, however you should
+  export your work to JSON if you care about it. It is not guaranteed to be
+  compatible with future versions, however we will try to maintain compatibility
+  as much as possible.
 - With each new generation, all tokens need to be injested again with most
   backends. This is solvable with `drama_llama` (longest prefix cache) but not
   for the OpenAI API. So for OpenAI, it's recommended to generate larger posts.
