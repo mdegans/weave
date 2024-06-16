@@ -327,6 +327,8 @@ impl std::fmt::Display for Story {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -348,5 +350,27 @@ mod tests {
             .for_each(|(id, &author)| {
                 assert_eq!(Some(id as u8), story.get_author(author));
             });
+    }
+
+    // This tests we don't break backwards compatibility with the old format.
+    #[test]
+    fn test_story_deserialize() {
+        let json_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test")
+            .join("data")
+            .join("sharks.0.0.3.json");
+
+        assert!(json_path.exists(), "Test data not found: {:?}", json_path);
+
+        let json = std::fs::read_to_string(json_path).unwrap();
+        let story: Story = serde_json::from_str(&json).unwrap();
+        assert_eq!(story.title, "Electrocuting Sharks");
+        assert_eq!(story.root.count(), 23);
+        let mut len = 0;
+        for node in story.root.iter_depth_first() {
+            len += node.text.len();
+        }
+        assert_eq!(len, 7453);
+        // We're not checking the format or display because they may change.
     }
 }
