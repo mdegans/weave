@@ -45,10 +45,6 @@ strip = true
 egui_commonmark = { version = "0.16", features = ["macros"] }
 serde = { version = "1.0", features = ["derive"] }
 egui = { version = "0.27", features = ["persistence"], optional = true }
-eframe = { version = "0.27", features = [
-    "persistence",
-    "wgpu",
-], optional = true }
 egui_extras = { version = "0.27", features = ["all_loaders"] }
 image = { version = "0.24", features = ["png"] }
 egui_file = { version = "0.17.0", optional = true }
@@ -67,23 +63,26 @@ keyring = { version = "2", optional = true }
 
 ollama-rs = { version = "0.1.9", optional = true }
 openai-rust = { version = "1.5", optional = true }
-
-[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-# This will fail on very old GPUs, but those will be slow for inference anyway.
-# If people want support for very old GPUs replace `cuda_f16` with `cuda`.
-drama_llama = { version = "0.5", optional = true, features = [
-    "cuda_f16",
-    "egui",
-] }
-
-[target.'cfg(not(any(target_os = "windows", target_os = "linux")))'.dependencies]
 drama_llama = { version = "0.5", optional = true, features = ["egui"] }
+
+# On Windows + arm64, the wgpu backend does not work -- at least on mac +
+# Parallels. The default backend seems to work fine, so we use that instead.
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+eframe = { version = "0.27", features = ["persistence"], optional = true }
+
+# On all other tested platforms, the wgpu backend works fine.
+[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
+eframe = { version = "0.27", features = [
+    "persistence",
+    "wgpu",
+], optional = true }
 
 
 [features]
 default = ["gui", "drama_llama", "openai"]
 generate = []
-
+cuda = ["drama_llama/cuda"]
+cuda_f16 = ["drama_llama/cuda_f16"]
 drama_llama = [
     "generate",
     "dep:drama_llama",
