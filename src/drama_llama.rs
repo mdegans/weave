@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::TryRecvError};
+use std::{
+    collections::BTreeMap, num::NonZeroUsize, path::PathBuf,
+    sync::mpsc::TryRecvError,
+};
 
 use drama_llama::{Engine, PredictOptions};
 
@@ -129,6 +132,13 @@ impl Worker {
             return Ok(());
         }
 
+        // Get the number of threads available to the system.
+        let n_threads: u32 = std::thread::available_parallelism()
+            .unwrap_or(NonZeroUsize::new(1).unwrap())
+            .get()
+            .try_into()
+            .unwrap_or(1);
+
         // Create channels to and from the worker from the (probably) main
         // thread.
         let (to_worker, from_main) = std::sync::mpsc::channel();
@@ -190,6 +200,7 @@ impl Worker {
                                     "Model context size: {}",
                                     max_context_size
                                 );
+
                                 to_main
                                     .send(Response::LoadedModel {
                                         model,
@@ -213,9 +224,13 @@ impl Worker {
                     }
                     Request::Predict { text, opts } => {
                         // If the requested context size is greater than the
-                        // engine's we must recreate it.
-                        if let Some(e) = engine.as_ref() {
+                        // engine's we must recreate it. We must take it because
+                        // we may need to drop it.
+                        if let Some(e) = engine.take() {
                             if opts.n.get() > e.n_ctx().max(512) as usize {
+                                // Drop the engine before we load a new one
+                                // because it's holding onto memory.
+                                drop(e);
                                 (engine, model_path) = match load_model(
                                     // if we have an engine, we have a model
                                     // path so this can't be None
@@ -232,8 +247,11 @@ impl Worker {
                                         (None, None)
                                     }
                                 };
+                            } else {
+                                // Put the engine back if we didn't recreate it.
+                                engine = Some(e);
                             }
-                        }
+                        };
 
                         if engine.is_none() {
                             // We can't satisfy the prediction request for this
@@ -258,6 +276,11 @@ impl Worker {
                 // We can unwrap here because we've already checked that the
                 // engine is not None.
                 let engine = engine.as_mut().unwrap();
+
+                // Configure the engine to use all available threads. LLaMA.cpp
+                // may run some layers on the CPU if they are not supported by
+                // the GPU, so this is useful.
+                engine.set_n_threads(n_threads, n_threads);
 
                 // Add any model-specific stop criteria. We do want to check
                 // here rather than add it to the settings because if the user
