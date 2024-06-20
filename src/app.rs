@@ -492,7 +492,6 @@ impl App {
                 }
 
                 // These are our sidebar tabs.
-                // TODO: better tabs and layout
                 ui.horizontal(|ui| {
                     ui.selectable_value(
                         &mut self.left_sidebar.page,
@@ -1064,7 +1063,6 @@ impl App {
                             crate::drama_llama::Response::Busy { request } => {
                                 // This might happen because of data races, but really
                                 // shouldn't.
-                                // TODO: make a macro for all these error messages.
                                 self.errors.push(format!(
                                 "Unexpected request sent to worker. Report this please: {:?}",
                                 request

@@ -118,10 +118,6 @@ impl Worker {
     ///
     /// This can return an error message if the model is not found or if an
     /// existing worker has returned an error.
-    // FIXME: we can probably stop blocking altogether, but we'd have to change
-    // a whole bunch of stuff and likely introduce async rumble jumble. It may
-    // not be worth it since blocking is so rare. It only happens on shutdown or
-    // model change, and only then in the middle of an inference.
     pub fn start(
         &mut self,
         context: egui::Context,
@@ -147,16 +143,6 @@ impl Worker {
         // Spawn the actual worker thread.
         log::debug!("Starting `drama_llama` worker thread.");
         let handle = std::thread::spawn(move || {
-            // FIXME: the error types in `drama_llama` are now all Send, so we
-            // can return any error types from this thread function. For now
-            // it's fine to use the channel to send errors. It might actually be
-            // better to do that anyway since we can't really handle errors here
-            // anyway. But if we panic it's nice to have the error in the log if
-            // we can. As it is in release builds we panic. We should perhaps
-            // change the behavior from abort to unwind so the worker can be
-            // restarted. *however* the sorts of crashes from llama.cpp tend to
-            // be those that cause the entire system to hang, so it's not clear
-            // that unwinding would be helpful. Let the OS handle it?
             let mut model_path = None;
             let mut engine = None;
             while let Ok(msg) = from_main.recv() {
@@ -244,6 +230,8 @@ impl Worker {
                                                 error: e.into(),
                                             })
                                             .ok();
+                                        // We don't have an engine now, so we
+                                        // don't have a model path either.
                                         (None, None)
                                     }
                                 };
