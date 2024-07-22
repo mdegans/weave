@@ -255,7 +255,7 @@ jobs:
           name: mac-app
           path: target/release/bundle/osx/Weave.tar.xz
       - name: Publish Mac App
-        uses: softprops/action-gh-release@v2.0.5
+        uses: softprops/action-gh-release@v2.0.8
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: target/release/bundle/osx/Weave.mac-app.tar.xz
@@ -271,7 +271,7 @@ jobs:
           name: linux-binary
           path: target/Weave..tar.xz
       - name: Publish Linux binary
-        uses: softprops/action-gh-release@v2.0.5
+        uses: softprops/action-gh-release@v2.0.8
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: target/Weave.ubuntu-latest.deb.tar.xz
@@ -287,7 +287,7 @@ jobs:
   #         name: windows-exe
   #         path: target/release/bundle/windows/
   #     - name: Publish Windows binary
-  #       uses: softprops/action-gh-release@v2.0.5
+  #       uses: softprops/action-gh-release@v2.0.8
   #       if: startsWith(github.ref, 'refs/tags/')
   #       with:
   #         files: target/release/bundle/windows/
