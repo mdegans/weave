@@ -7,7 +7,7 @@ Weave is a "multiversal" generative tree writing tool akin to [`loom`](https://g
 - ✅ [`drama_llama`](https://github.com/mdegans/drama_llama) - llama.cpp wrapper supporting all llama.cpp models
 - ✅ OpenAI models
   - ✅ Shim for GPT 3.5+ chat completions API, including GPT 4o.
-- 🔲 Anthropic models
+- 🔲 Anthropic models (coming soon, using [`misanthropic`](https://docs.rs/misanthropic/latest/misanthropic/))
 
 ## Installation
 
@@ -34,8 +34,8 @@ Notable features:
 Coming soon:
 
 - Multiple tabs and windows
-- Node layout features, including force direction.
 - Per-story settings
+- Anthropic models
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
 
@@ -72,7 +72,8 @@ Additionally, one goal of `weave` is feature parity with [`loom`](https://github
   backends. This is solvable with `drama_llama` (longest prefix cache) but not
   for the OpenAI API. So for OpenAI, it's recommended to generate larger posts.
   The system prompt is customizable so you can tweak the agent's instructions on
-  verbosity.
+  verbosity. With Anthropic models, caching will be supported at user-defined
+  breakpoints.
 - It is not currently possible to have a scrollable viewport so it's
   recommended to collapse nodes if things get cluttered. This is because the
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
