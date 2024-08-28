@@ -6,6 +6,10 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - dev
+      - main
 
 jobs:
   mac-test:
@@ -20,10 +24,6 @@ jobs:
           components: rustfmt, clippy
       - name: Install Ninja
         run: brew install ninja
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
       - name: Install LLVM tools
         run: brew install llvm
       - name: Install cargo-llvm-cov
@@ -46,43 +46,12 @@ jobs:
           components: rustfmt, clippy
       - name: Install Ninja
         run: sudo apt-get install ninja-build
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
       - name: Install LLVM tools
         run: sudo apt-get install llvm
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Install CUDA
         run: sudo apt-get install nvidia-cuda-toolkit nvidia-cudnn nvidia-cuda-dev
-      - name: Run tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-  # Windows is expected to fail for the moment
-  windows-test:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-      - name: Install Ninja
-        run: choco install ninja
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-      - name: Install LLVM tools
-        run: choco install llvm
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
       - name: Run tests with coverage
         run: cargo llvm-cov --workspace --lcov --output-path ./target/lcov.info
       - name: Upload coverage reports to Codecov

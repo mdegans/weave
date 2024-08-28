@@ -1,4 +1,8 @@
+use std::{collections::BTreeMap, path::PathBuf};
+
 use serde::{Deserialize, Serialize};
+
+use crate::node::Layout;
 
 /// Backend for generation.
 #[cfg(feature = "generate")]
@@ -82,6 +86,9 @@ pub enum BackendOptions {
         // Maximum context size for the model. This is set when the model is
         // loaded and is used to clamp the context size in the UI.
         max_context_size: usize,
+        #[serde(skip)]
+        // Model metadata if loaded.
+        metadata: Option<BTreeMap<String, String>>,
     },
     #[cfg(feature = "ollama")]
     Ollama,
@@ -128,6 +135,7 @@ impl BackendOptions {
                 predict_options: Default::default(),
                 file_dialog: None,
                 max_context_size: 128000,
+                metadata: None,
             },
             #[cfg(feature = "ollama")]
             GenerativeBackend::Ollama => BackendOptions::Ollama,
@@ -186,6 +194,8 @@ pub struct Settings {
     pub prompt_include_authors: bool,
     /// Whether to show the title to the model.
     pub prompt_include_title: bool,
+    /// Node layout settings.
+    pub layout: Layout,
     #[cfg(feature = "generate")]
     #[serde(default)]
     pub selected_generative_backend: GenerativeBackend,
@@ -199,9 +209,13 @@ pub struct Settings {
     #[serde(skip)]
     /// Whether backend switching is pending.
     pub pending_backend_switch: Option<GenerativeBackend>,
+    /// Whether a model is currently being loaded.
+    #[serde(skip)]
+    #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+    pub loading_model: Option<PathBuf>,
 }
 
-pub enum Action {
+pub(crate) enum Action {
     /// The user has requested to switch generative backends. When the switch is
     /// complete, `Settings::pending_backend_switch` should be set to `None`.
     SwitchBackends {
@@ -212,6 +226,8 @@ pub enum Action {
     },
     #[cfg(feature = "openai")]
     OpenAI(crate::openai::SettingsAction),
+    #[cfg(feature = "drama_llama")]
+    DramaLlama(crate::drama_llama::Request),
 }
 
 impl Settings {
@@ -247,18 +263,6 @@ impl Settings {
             ));
         }
 
-        ui.checkbox(
-            &mut self.prompt_include_authors,
-            "Include author in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
-
-        ui.checkbox(
-            &mut self.prompt_include_title,
-            "Include title in prompt sent to model.",
-        )
-        .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
-
         // If there is only one backend, don't show the dropdown.
         if GenerativeBackend::ALL.len() > 1 {
             // allow the user to switch backends
@@ -287,6 +291,41 @@ impl Settings {
                 });
         }
 
+        // Show the author and title options if the backend supports it. This is
+        // outside the match below because two mutable borrows of self are not
+        // allowed.
+        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+        if matches!(
+            self.selected_generative_backend,
+            GenerativeBackend::DramaLlama
+        ) {
+            ui.checkbox(
+                    &mut self.prompt_include_authors,
+                    "Include author in prompt sent to model.",
+                )
+                .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
+
+            ui.checkbox(
+                    &mut self.prompt_include_title,
+                    "Include title in prompt sent to model.",
+                )
+                .on_hover_text_at_pointer("It will still be shown in the viewport. Hiding it can improve quality of generation since models have biases. Does not apply to all backends.");
+        }
+
+        // If we're loading a model, show a loading message.
+        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+        if let Some(model) = &self.loading_model {
+            ui.label(format!(
+                "Loading model: {}",
+                model
+                    .file_name()
+                    .map(|f| f.to_string_lossy())
+                    .unwrap_or("INVALID".into())
+            ));
+            return ret; // skip the rest of the UI while loading
+        }
+
+        let mut model_to_load = None;
         match self.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             // FIXME: we should do like with `openai` below an have a settings
@@ -295,11 +334,24 @@ impl Settings {
                 model,
                 predict_options,
                 file_dialog,
+                metadata,
                 max_context_size,
             } => {
                 // Choose model
-                ui.label(format!("Model: {:?}", model));
-                if ui.button("Change model").clicked() {
+                if let Some(filename) = model.file_name() {
+                    ui.label(format!("Model: {}", filename.to_string_lossy()));
+                }
+                if let Some(metadata) = metadata {
+                    egui::CollapsingHeader::new("Model metadata")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for (key, value) in metadata {
+                                ui.label(format!("{}: {}", key, value));
+                            }
+                        });
+                }
+
+                if ui.button("Load Model").clicked() {
                     let filter = move |path: &std::path::Path| {
                         path.extension().map_or(false, |ext| ext == "gguf")
                     };
@@ -317,11 +369,13 @@ impl Settings {
                 if let Some(dialog) = file_dialog {
                     if dialog.show(ui.ctx()).selected() {
                         if let Some(path) = dialog.path() {
-                            Self::drama_llama_helper(
-                                model,
-                                max_context_size,
-                                path,
-                            )
+                            // Send a message to the backend to load the model.
+                            ret = Some(Action::DramaLlama(
+                                crate::drama_llama::Request::LoadModel {
+                                    model: path.to_path_buf(),
+                                },
+                            ));
+                            model_to_load = Some(path.to_path_buf());
                         }
                         *file_dialog = None;
                     }
@@ -370,7 +424,7 @@ impl Settings {
                         }
                     });
 
-                    predict_options.draw_inner(ui);
+                    predict_options.draw_inner(ui, *max_context_size);
                 });
             }
             #[cfg(feature = "openai")]
@@ -382,6 +436,13 @@ impl Settings {
 
             #[allow(unreachable_patterns)] // because same as above
             _ => {}
+        }
+
+        // If we're loading a model, we need to set the model path after the
+        // above block because we're holding a mutable reference to self above.
+        #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+        if let Some(path) = model_to_load {
+            self.loading_model = Some(path);
         }
 
         ret
@@ -414,15 +475,8 @@ impl Settings {
     pub fn setup(&mut self) {
         match self.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
-            BackendOptions::DramaLlama {
-                model,
-                max_context_size,
-                ..
-            } => {
-                let new = model.clone();
-                if model.exists() {
-                    Self::drama_llama_helper(model, max_context_size, &new);
-                }
+            BackendOptions::DramaLlama { .. } => {
+                // Nothing to do yet.
             }
             #[cfg(feature = "openai")]
             BackendOptions::OpenAI { ref mut settings } => {
@@ -431,39 +485,6 @@ impl Settings {
             #[allow(unreachable_patterns)] // because same as above
             _ => {}
         }
-    }
-
-    /// A helper to configure `drama_llama` settings, avoiding a mutable borrow
-    /// of self because we can't call it our draw code otherwise.
-    #[cfg(feature = "drama_llama")]
-    pub(crate) fn drama_llama_helper(
-        model_path: &mut std::path::PathBuf,
-        model_context_len: &mut usize,
-        desired_path: &std::path::Path,
-    ) {
-        // Validate the model
-        log::debug!("Validating model: {:?}", desired_path);
-        if let Some(m) =
-            drama_llama::Model::from_file(desired_path.to_path_buf(), None)
-        {
-            let new_size: usize = m.context_size().try_into().unwrap_or(0);
-
-            if new_size != 0 {
-                *model_context_len = m.context_size().max(1) as usize;
-                log::debug!("Detected max context size: {}", model_context_len)
-            } else {
-                log::warn!(
-                    "Failed to determine context size for model: {:?}",
-                    desired_path
-                );
-            }
-
-            log::debug!("Model metadata: {:#?}", m.meta());
-        } else {
-            log::error!("Failed to load model: {:?}", desired_path);
-        }
-
-        *model_path = desired_path.to_path_buf();
     }
 
     /// A helper to configure OpenAI settings

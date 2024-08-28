@@ -7,7 +7,18 @@ Weave is a "multiversal" generative tree writing tool akin to [`loom`](https://g
 - ✅ [`drama_llama`](https://github.com/mdegans/drama_llama) - llama.cpp wrapper supporting all llama.cpp models
 - ✅ OpenAI models
   - ✅ Shim for GPT 3.5+ chat completions API, including GPT 4o.
-- 🔲 Anthropic models
+- 🔲 Anthropic models (coming soon, using [`misanthropic`](https://docs.rs/misanthropic/latest/misanthropic/))
+
+## Installation
+
+- **Download** a release from the [releases page](https://github.com/mdegans/weave/releases) and extract it.
+- For **macOS and Linux** installation will be straightforward with an `.app` and a Debian package containing a static binary.
+- For Windows, a release is not yet provided but it will probably build for `openai` with `cargo build --release --features="openai,gui"`. LLaMA will require a bit more work to build on Windows.
+
+## Usage
+
+- [llama](resources/LLAMA_HELP.md)
+- [openai](resources/OPENAI_HELP.md)
 
 ## Features
 
@@ -22,46 +33,48 @@ Notable features:
 
 Coming soon:
 
-- Keyboard shortcuts.
+- Multiple tabs and windows
+- Per-story settings
+- Anthropic models
 
 Additionally, one goal of `weave` is feature parity with [`loom`](https://github.com/socketteer/loom?tab=readme-ov-file#features).
 
 - ☑️ Read mode
   - ✅ Linear story view
-  - 🔲 Tree nav bar
+  - ✅ Tree nav bar
   - 🔲 Edit mode
 - ☑️ Tree view
   - ✅ Explore tree visually with mouse
   - ✅ Expand and collapse nodes
-  - 🔲 Change tree topology
+  - ✅ Change tree topology
   - ✅ Edit nodes in place
 - 🔲 Navigation
-  - 🔲 Hotkeys
+  - ✅ Hotkeys
   - 🔲 Bookmarks
   - 🔲 Chapters
   - 🔲 'Visited' state
 - ☑️ Generation
   - 🔲 Generate N children with various models (currently one a time).
-  - ✅ Modify generation settings (Complete for OpenAI but not yet from LLaMA)
+  - ✅ Modify generation settings (Complete for OpenAI and mostly for local)
 - ☑️ File I/O
   - ✅ Serializable application state, including stories, to JSON.
   - ✅ Open/save trees as JSON files
   - 🔲 Work with trees in multiple tabs
-  - 🔲 Combine multiple trees
+  - ✅ Combine multiple trees
 
 # Notable issues
 
-- On some platforms (like MacOS) the Weave icon will change to an `e` shortly
-  after launch. See [this
-  issue](https://github.com/emilk/egui/issues/3823#issuecomment-1892423108) for
-  details.
+- This is **alpha software**. It may crash. It does auto-save, however you should
+  export your work to JSON if you care about it. It is not guaranteed to be
+  compatible with future versions, however we will try to maintain compatibility
+  as much as possible.
 - With each new generation, all tokens need to be injested again with most
   backends. This is solvable with `drama_llama` (longest prefix cache) but not
   for the OpenAI API. So for OpenAI, it's recommended to generate larger posts.
   The system prompt is customizable so you can tweak the agent's instructions on
-  verbosity.
+  verbosity. With Anthropic models, caching will be supported at user-defined
+  breakpoints.
 - It is not currently possible to have a scrollable viewport so it's
   recommended to collapse nodes if things get cluttered. This is because the
   nodes are implemented with [`egui::containers::Window`](https://docs.rs/egui/latest/egui/containers/struct.Window.html) which ignore scrollable areas. This is fixable
-  but not easily and not cleanly. When it is resolved the central panel will be
-  split into story and node views.
+  but not easily and not cleanly. Zoom does work, however (Ctrl + + and Ctrl + -).

@@ -2,7 +2,11 @@ mod settings;
 
 use {
     self::settings::{BackendOptions, Settings},
-    crate::story::Story,
+    crate::{
+        button,
+        node::{Action, Meta, Node},
+        story::{DrawMode, Story},
+    },
 };
 
 #[derive(Default, PartialEq, derive_more::Display)]
@@ -18,24 +22,44 @@ struct LeftSidebar {
     pub title_buf: String,
     pub page: SidebarPage,
     pub visible: bool,
+    /// Whether the story title is being edited. If this is true, the story
+    /// title widget is a text edit widget. Otherwise, it is a label.
+    pub editing_active_title: bool,
 }
 
+#[derive(Default, PartialEq)]
+pub enum RightSidebarPage {
+    #[default]
+    Text,
+    Tree,
+}
+
+impl RightSidebarPage {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Text => "Text",
+            Self::Tree => "Tree",
+        }
+    }
+}
 #[derive(Default)]
 struct RightSidebar {
     pub text: Option<String>,
     pub text_current: bool,
     pub visible: bool,
     pub model_view: bool,
+    pub markdown: bool,
+    pub page: RightSidebarPage,
 }
 
 impl RightSidebar {
     /// The story text will be updated on the next draw if this is called. This
     /// is an optimization to avoid reformatting the story each frame if it
     /// hasn't changed.
-    // TODO: This might not actually be worth it. We shoudl profile first since
+    // TODO: This might not actually be worth it. We should profile first since
     // formatting the story and traversing the tree isn't actually all that
     // expensive, but it could be if there are many nodes. There is a lot of CPU
-    // usage, but it doens't seem to be coming from our code. My guess is using
+    // usage, but it doesn't seem to be coming from our code. My guess is using
     // `egui::Window` for each node is part of the problem.
     pub fn refresh_story(&mut self) {
         self.text_current = false;
@@ -70,24 +94,29 @@ impl From<String> for Error {
 pub struct App {
     active_story: Option<usize>,
     stories: Vec<Story>,
+    trash: Vec<Story>,
     settings: Settings,
     left_sidebar: LeftSidebar,
     right_sidebar: RightSidebar,
+    last_frame_time: f64,
+    time_step: f64,
+    /// Temporary node storage for copy/paste.
+    node_clipboard: Option<Node<Meta>>,
     /// Modal error messages.
     errors: Vec<Error>,
+    /// Commonmark cache
+    commonmark_cache: egui_commonmark::CommonMarkCache,
     #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
     drama_llama_worker: crate::drama_llama::Worker,
     #[cfg(feature = "openai")]
     openai_worker: crate::openai::Worker,
     #[cfg(feature = "generate")]
-    generation_in_progress: bool,
+    pub(crate) generation_ui_locked: bool,
     #[cfg(not(target_arch = "wasm32"))]
     save_dialog: Option<egui_file::FileDialog>,
     #[cfg(not(target_arch = "wasm32"))]
     saving_txt: bool,
 }
-
-// {"default_author":"","prompt_include_authors":false,"prompt_include_title":false,"selected_generative_backend":"OpenAI","backend_options":{"DramaLlama":{"DramaLlama":{"model":"","predict_options":{"n":512,"seed":1337,"stop_sequences":[],"stop_strings":[],"regex_stop_sequences":[],"sample_options":{"modes":[],"repetition":null}}}},"OpenAI":{"OpenAI":{"settings":{"openai_api_key":"hidden in keyring","chat_arguments":{"model":"gpt-3.5-turbo","messages":[{"role":"system","content":"A user and an assistant are collaborating on a story. The user starts by writing a paragraph, then the assistant writes a paragraph, and so on. Both will be credited for the end result.'"},{"role":"user","content":"Hi, GPT! Let's write a story together."},{"role":"assistant","content":"Sure, I'd love to help. How about you start us off? I'll try to match your tone and style."}],"temperature":1.0,"top_p":1.0,"n":null,"stop":null,"max_tokens":1024,"presence_penalty":0.0,"frequency_penalty":0.0,"user":null}}}}}}
 
 impl App {
     pub fn new<'s>(cc: &eframe::CreationContext<'s>) -> Self {
@@ -107,6 +136,31 @@ impl App {
                                 errors.push(
                                     format!(
                                         "Failed to load stories because: {}",
+                                        e
+                                    )
+                                    .into(),
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let trash = cc
+            .storage
+            .map(|storage| {
+                storage
+                    .get_string("trash")
+                    .and_then(|s| {
+                        log::debug!("Loading trash: {}", s);
+                        match serde_json::from_str(&s) {
+                            Ok(trash) => Some(trash),
+                            Err(e) => {
+                                errors.push(
+                                    format!(
+                                        "Failed to load trash because: {}",
                                         e
                                     )
                                     .into(),
@@ -144,11 +198,19 @@ impl App {
             })
             .unwrap_or_default();
 
+        let mut last_frame_time = 0.0;
+        ctx.input(|state| {
+            last_frame_time = state.time;
+        });
+
         #[allow(unused_mut)]
         let mut new = Self {
             stories,
             settings,
             active_story: None,
+            trash,
+            last_frame_time,
+            time_step: 1.0 / 60.0,
             ..Default::default()
         };
 
@@ -162,6 +224,19 @@ impl App {
         new
     }
 
+    /// Update frame time.
+    pub fn update_time_step(&mut self, ctx: &egui::Context) {
+        let mut this_frame_time = 0.0;
+        ctx.input(|state| {
+            this_frame_time = state.time;
+        });
+        self.time_step = (self.time_step
+            + (this_frame_time - self.last_frame_time).max(1.0 / 15.0))
+            / 2.0;
+        self.last_frame_time = this_frame_time;
+    }
+
+    /// Add a new story.
     pub fn new_story(&mut self, title: String, author: String) {
         self.stories.push(Story::new(title, author));
         self.active_story = Some(self.stories.len() - 1);
@@ -169,7 +244,7 @@ impl App {
 
     /// (active) story
     pub fn story(&self) -> Option<&Story> {
-        self.active_story.map(|i| &self.stories[i])
+        self.active_story.map(|i| self.stories.get(i))?
     }
 
     /// (active) story
@@ -188,12 +263,14 @@ impl App {
             "Starting generative backend: {}",
             self.settings.selected_generative_backend
         );
+
         self.settings.setup();
 
         match self.settings.backend_options() {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             settings::BackendOptions::DramaLlama { model, .. } => {
-                self.drama_llama_worker.start(model.clone(), context)?;
+                self.drama_llama_worker.start(context)?;
+                self.drama_llama_worker.load_model(model.clone())?;
             }
             #[cfg(feature = "openai")]
             settings::BackendOptions::OpenAI { settings } => {
@@ -225,7 +302,7 @@ impl App {
     pub fn start_generation(
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.generation_in_progress {
+        if self.generation_ui_locked {
             // If this happens, some UI element is not locked properly.
             panic!("Generation already in progress. This is a bug. Please report it.");
         }
@@ -277,10 +354,10 @@ impl App {
                         Ok(_) => {
                             // This flag is used to lock the UI while generation
                             // is in progress.
-                            self.generation_in_progress = true;
+                            self.generation_ui_locked = true;
                         }
                         Err(e) => {
-                            self.generation_in_progress = false;
+                            self.generation_ui_locked = false;
                             return Err(e.into());
                         }
                     }
@@ -307,7 +384,7 @@ impl App {
 
                     match self.openai_worker.predict(options) {
                         Ok(_) => {
-                            self.generation_in_progress = true;
+                            self.generation_ui_locked = true;
                         }
                         Err(e) => {
                             if e.is_disconnected() {
@@ -316,7 +393,7 @@ impl App {
                                 // error like a bad API key. No matter what, we
                                 // should unlock the UI so the worker can be
                                 // restarted.
-                                self.generation_in_progress = false;
+                                self.generation_ui_locked = false;
                             } else {
                                 // Channel is full. This is bad.
                                 panic!("OpenAI worker command channel is full. This is a bug. Please report this: {}", e)
@@ -387,9 +464,13 @@ impl App {
                 // fix this is just to make such actions impossible so we'll
                 // replace the sidebar with generation controls.
                 #[cfg(feature = "generate")]
-                if self.generation_in_progress {
-                    ui.heading("Generating...");
-                    if ui.button("Stop").clicked() {
+                if self.generation_ui_locked {
+                    ui.heading("Generating...").on_hover_text_at_pointer(
+                        "This might take a while the first time, especially with large local models."
+                    );
+                    if ui.button("Stop")
+                        .on_hover_text_at_pointer("Stop generation. This might take a moment if the models is still being loaded.")
+                        .clicked() {
                         #[cfg(all(
                             feature = "drama_llama",
                             not(target_arch = "wasm32")
@@ -411,7 +492,6 @@ impl App {
                 }
 
                 // These are our sidebar tabs.
-                // TODO: better tabs and layout
                 ui.horizontal(|ui| {
                     ui.selectable_value(
                         &mut self.left_sidebar.page,
@@ -449,66 +529,123 @@ impl App {
             return;
         }
         // Story is some. We can unwrap below. Story cannot change while this
-        // function is running since it is not accessable from any other
+        // function is running since it is not accessible from any other
         // thread.
+
+        // Time step for custom simulations and animations.
+        let time_step = self.time_step as f32;
 
         egui::SidePanel::right("right_sidebar")
             .default_width(200.0)
             .resizable(true)
             .show_animated(ctx, self.right_sidebar.visible, |ui| {
-                if self
-                    .settings
-                    .selected_generative_backend
-                    .supports_model_view()
-                {
-                    if ui
-                        .checkbox(
-                            &mut self.right_sidebar.model_view,
-                            "model view",
-                        )
-                        .on_hover_text_at_pointer(
-                            "Show exactly what the model is prompted with.",
-                        )
-                        .changed()
-                    {
-                        self.right_sidebar.refresh_story();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.right_sidebar.page,
+                        RightSidebarPage::Text,
+                        "As Text",
+                    );
+                    ui.selectable_value(
+                        &mut self.right_sidebar.page,
+                        RightSidebarPage::Tree,
+                        "As Tree",
+                    );
+                });
+
+                ui.heading(self.right_sidebar.page.as_str());
+
+                match self.right_sidebar.page {
+                    RightSidebarPage::Text => {
+                        if self
+                            .settings
+                            .selected_generative_backend
+                            .supports_model_view()
+                        {
+                            if ui
+                                .checkbox(
+                                    &mut self.right_sidebar.model_view,
+                                    "As Prompted",
+                                )
+                                .on_hover_text_at_pointer(
+                                    "Show only the text the model is prompted with.",
+                                )
+                                .changed()
+                            {
+                                self.right_sidebar.refresh_story();
+                            }
+                        }
+                        if ui
+                            .checkbox(
+                                &mut self.right_sidebar.markdown,
+                                "As Markdown",
+                            )
+                            .on_hover_text_at_pointer(
+                                "Render Markdown formatting.",
+                            )
+                            .changed()
+                        {
+                            self.right_sidebar.refresh_story();
+                        }
+
+                        let include_authors = if self.right_sidebar.model_view {
+                            self.settings.prompt_include_authors
+                        } else {
+                            true
+                        };
+                        let include_title = if self.right_sidebar.model_view {
+                            self.settings.prompt_include_title
+                        } else {
+                            true
+                        };
+
+                        if !self.right_sidebar.text_current {
+                            // We need to shuffle the text around a bit. We do this
+                            // because mutable references, and to avoid reallocation
+                            let mut text = self
+                                .right_sidebar
+                                .text
+                                .take()
+                                .unwrap_or(String::new());
+                            text.clear();
+                            if let Some(story) = self.story() {
+                                story.format_full(
+                                    &mut text,
+                                    include_authors,
+                                    include_title,
+                                )
+                                .unwrap();
+                            }
+                            self.right_sidebar.text = Some(text);
+                        }
+
+                        // We have some text to display because there is a story and
+                        // formatting cannot actually fail.
+                        if !self.right_sidebar.markdown {
+                            ui.label(self.right_sidebar.text.as_ref().unwrap());
+                        } else {
+                            egui_commonmark::CommonMarkViewer::new("story_markdown")
+                                .show(ui, &mut self.commonmark_cache, self.right_sidebar.text.as_ref().unwrap());
+                        }
+                    }
+                    RightSidebarPage::Tree => {
+                        let lock_topology = self.generation_ui_locked;
+                        let layout = self.settings.layout.clone();
+                        if let Some(story) = self.story_mut() {
+                            if let Some(action) =
+                                story.draw(ui, lock_topology, layout, DrawMode::Tree, time_step)
+                            {
+                                self.handle_story_action(action);
+                            }
+                        }
                     }
                 }
-
-                let include_authors = if self.right_sidebar.model_view {
-                    self.settings.prompt_include_authors
-                } else {
-                    true
-                };
-                let include_title = if self.right_sidebar.model_view {
-                    self.settings.prompt_include_title
-                } else {
-                    true
-                };
-
-                if !self.right_sidebar.text_current {
-                    // We need to shuffle the text around a bit. We do this
-                    // because mutable references, and to avoid reallocation
-                    let mut text =
-                        self.right_sidebar.text.take().unwrap_or(String::new());
-                    text.clear();
-                    self.story()
-                        .unwrap()
-                        .format_full(&mut text, include_authors, include_title)
-                        .unwrap();
-                    self.right_sidebar.text = Some(text);
-                }
-
-                // We have some text to display because there is a story and
-                // formatting cannot actually fail.
-                ui.label(self.right_sidebar.text.as_ref().unwrap());
             });
     }
 
     /// Draw error message if there is one. Returns `true` if the error message
     /// is displayed. This function accepts a closure which can be used to
     /// display additional UI elements, such as a button to handle the error.
-    pub fn draw_error_messages(&mut self, ctx: &egui::Context) -> bool {
+    pub fn handle_errors(&mut self, ctx: &egui::Context) -> bool {
         let mut closed = false; // because two mutable references
         if let Some(Error {
             message,
@@ -542,129 +679,39 @@ impl App {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn draw_save_buttons(&mut self, ui: &mut egui::Ui) {
-        ui.label("Save");
         ui.horizontal(|ui| {
-            let filter = Box::new(move |path: &std::path::Path| {
-                path.extension().map_or(false, |ext| ext == "json")
-            });
-
             let save_btn = ui
-                .button("Save")
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/save.png"
+                )))
                 .on_hover_text_at_pointer("Save story to JSON.");
 
             let export = ui
-                .button("Export")
-                .on_hover_text_at_pointer("Export active story path to Markdown.");
-
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/export.png"
+                )))
+                .on_hover_text_at_pointer(
+                    "Export active story path to Markdown.",
+                );
             let load_btn = ui
-                .button("Load")
+                .add(egui::Button::image(egui::include_image!(
+                    "../resources/load.png"
+                )))
                 .on_hover_text_at_pointer("Load story from JSON.");
 
+            // only one can happen per frame realistically
             if save_btn.clicked() {
-                let mut dialog = egui_file::FileDialog::save_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.save_dialog = Some(dialog);
+                self.save_to_json();
             } else if load_btn.clicked() {
-                let mut dialog = egui_file::FileDialog::open_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.saving_txt = false;
-                self.save_dialog = Some(dialog);
+                self.load_from_json();
             } else if export.clicked() {
-                let filter = Box::new(move |path: &std::path::Path| {
-                    path.extension().map_or(false, |ext| ext == "md")
-                });
-
-                let mut dialog = egui_file::FileDialog::open_file(None)
-                        .show_files_filter(filter);
-                dialog.open();
-
-                self.saving_txt = true;
-                self.save_dialog = Some(dialog);
-            }
-
-            if let Some(dialog) = &mut self.save_dialog {
-                if dialog.show(ui.ctx()).selected() {
-                    if let Some(path) = dialog.path() {
-                        match dialog.dialog_type() {
-                            egui_file::DialogType::OpenFile => {
-                                let text = match std::fs::read_to_string(path) {
-                                    Ok(text) => text,
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to read `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                };
-                                let story:Story = match serde_json::from_str(&text) {
-                                    Ok(story) => story,
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to parse `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                };
-
-                                self.stories.push(story);
-                            },
-                            egui_file::DialogType::SaveFile => {
-                                let active_story_index = match self.active_story {
-                                    Some(i) => i,
-                                    None => {
-                                        self.errors.push("No active story to save.".into());
-                                        return;
-                                    }
-                                };
-
-                                let payload = if self.saving_txt {
-                                    self.stories[active_story_index].to_string()
-                                } else {
-                                    match serde_json::to_string(&self.stories[active_story_index]) {
-                                        Ok(json) => json,
-                                        Err(e) => {
-                                            self.errors.push(format!(
-                                                "Failed to serialize stories because: {}",
-                                                e
-                                            ).into());
-                                            return;
-                                        }
-                                    }
-                                };
-
-                                match std::fs::write(path, payload) {
-                                    Ok(_) => {},
-                                    Err(e) => {
-                                        self.errors.push(format!(
-                                            "Failed to write `{:?}` because: {}",
-                                            path,
-                                            e
-                                        ).into());
-                                        return;
-                                    }
-                                }
-                            },
-                            egui_file::DialogType::SelectFolder => {
-                                unreachable!("Because we don't instantiate this type above.")
-                            },
-                        }
-                    }
-                    self.save_dialog = None;
-                }
+                self.export_to_markdown();
             }
         });
     }
 
     /// Handle settings action.
-    pub fn handle_settings_action(
+    pub(crate) fn handle_settings_action(
         &mut self,
         action: settings::Action,
         context: &egui::Context,
@@ -712,31 +759,75 @@ impl App {
                     }
                 }
             },
+            #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
+            settings::Action::DramaLlama(request) => {
+                match self.drama_llama_worker.send(request) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.errors.push(
+                            format!(
+                                "Failed to send request to drama llama worker: {:?}",
+                                e.0
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
         }
     }
 
     /// Draw the stories sidebar tab.
     fn draw_stories_tab(&mut self, ui: &mut egui::Ui) {
+        // We might not support wasm at all, but if we do this will have to be
+        // implemented differently. Skip it for now.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.draw_save_buttons(ui);
+            ui.separator();
+        }
         let mut delete = None;
-        for (i, story) in self.stories.iter().enumerate() {
+        for (i, story) in self.stories.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                if ui.button("X").clicked() {
+                let active_story =
+                    self.active_story.is_some_and(|idx| idx == i);
+                if button!(ui, "../resources/delete.png").clicked() {
                     delete = Some(i);
                 }
-                if ui.button(&story.title).clicked() {
-                    self.active_story = Some(i);
+                if active_story {
+                    if self.left_sidebar.editing_active_title {
+                        ui.text_edit_singleline(&mut story.title);
+                        if ui
+                            .add(egui::Button::image(egui::include_image!(
+                                "../resources/check.png"
+                            )))
+                            .clicked()
+                        {
+                            self.left_sidebar.editing_active_title = false;
+                        }
+                    } else if ui.button(&story.title).clicked() {
+                        self.left_sidebar.editing_active_title = true;
+                    }
+                } else {
+                    if ui.button(&story.title).clicked() {
+                        self.active_story = Some(i);
+                        self.left_sidebar.editing_active_title = false;
+                    }
                 }
             });
         }
         if let Some(i) = delete {
-            self.stories.remove(i);
+            self.trash.push(self.stories.remove(i));
             if self.active_story == Some(i) {
                 self.active_story = None;
             }
         }
 
         ui.horizontal(|ui| {
-            if ui.button("New").clicked() {
+            if button!(ui, "../resources/add.png")
+                .on_hover_text_at_pointer("Add a story.")
+                .clicked()
+            {
                 let title = self.left_sidebar.title_buf.clone();
                 let author = self.settings.default_author.clone();
                 self.new_story(title, author);
@@ -745,10 +836,49 @@ impl App {
             ui.text_edit_singleline(&mut self.left_sidebar.title_buf);
         });
 
-        // We might not support wasm at all, but if we do this will have to be
-        // implemented differently. Skip it for now.
-        #[cfg(not(target_arch = "wasm32"))]
-        self.draw_save_buttons(ui);
+        let mut restore = None;
+        delete = None;
+        if !self.trash.is_empty() {
+            // FIXME: This should be bottom aligned. I tried a TopBottomPanel
+            // but it draws on *top* of the central panel which is not what we
+            // want. We want it to be below the stories list at the bottom of
+            // the sidebar.
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Trash");
+                if button!(ui, "../resources/delete_forever.png")
+                    .on_hover_text_at_pointer("Empty trash permanantly.")
+                    .clicked()
+                {
+                    self.trash.clear();
+                }
+            });
+            ui.separator();
+            for (i, story) in self.trash.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if button!(ui, "../resources/restore.png")
+                        .on_hover_text_at_pointer("Restore story.")
+                        .clicked()
+                    {
+                        restore = Some(i);
+                    }
+                    if button!(ui, "../resources/delete_forever.png")
+                        .on_hover_text_at_pointer("Delete story permanantly.")
+                        .clicked()
+                    {
+                        delete = Some(i);
+                    }
+                    ui.label(&story.title);
+                });
+            }
+        }
+
+        if let Some(i) = restore {
+            self.stories.push(self.trash.remove(i));
+        }
+        if let Some(i) = delete {
+            self.trash.remove(i);
+        }
     }
 
     /// Draw the central panel.
@@ -757,8 +887,7 @@ impl App {
         ctx: &eframe::egui::Context,
         _frame: &mut eframe::Frame,
     ) {
-        // Because mutable references, we need to copy these flags.
-        let mut start_generation = false;
+        let time_step = self.time_step as f32;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut new_pieces = Vec::new();
@@ -781,25 +910,27 @@ impl App {
             // solution might perform better as well and I have some experience
             // with it.
             // In the meantime, the windows are, at least, collapsible.
-            let generation_in_progress = self.generation_in_progress;
+            let generation_in_progress = self.generation_ui_locked;
+            let layout = self.settings.layout.clone();
             let mut update_right_sidebar = false;
             if let Some(story) = self.story_mut() {
-                // TODO: the response from story.draw could be more succinct. We
-                // only realy know if we need to start generation (for now).
-                if let Some(action) = story.draw(ui, generation_in_progress) {
-                    if action.continue_ | action.generate.is_some() {
-                        // The path has already been changed. We need only
-                        // start generation.
-                        start_generation = true;
-                    }
-                    if action.modified {
-                        update_right_sidebar = true;
-                    }
-                }
                 if !new_pieces.is_empty() {
                     story.extend_paragraph(new_pieces);
                     update_right_sidebar = true;
                 }
+
+                // TODO: the response from story.draw could be more succinct. We
+                // only really know if we need to start generation (for now).
+                if let Some(action) = story.draw(
+                    ui,
+                    generation_in_progress,
+                    layout,
+                    DrawMode::Nodes,
+                    time_step,
+                ) {
+                    self.handle_story_action(action)
+                }
+
                 if update_right_sidebar {
                     self.right_sidebar.refresh_story();
                 }
@@ -812,9 +943,29 @@ impl App {
                     );
                 }
                 ui.heading("Welcome to Weave!");
-                ui.label("Keyboard shortcuts:\n- `ESC` to start a new story or to access settings.\n- `F1` to toggle a view of the story's path as text.");
+                egui_commonmark::commonmark_str!(
+                    "welcome",
+                    ui,
+                    &mut self.commonmark_cache,
+                    "resources/SHORTCUTS.md"
+                );
             }
         });
+    }
+
+    /// Handle path action.
+    pub fn handle_story_action(&mut self, action: Action) {
+        let mut start_generation = false;
+        let mut update_right_sidebar = false;
+
+        if action.continue_ | action.generate.is_some() {
+            // The path has already been changed. We need only
+            // start generation.
+            start_generation = true;
+        }
+        if action.modified {
+            update_right_sidebar = true;
+        }
 
         if start_generation {
             if let Err(e) = self.start_generation() {
@@ -823,6 +974,10 @@ impl App {
                 );
             }
         }
+
+        if update_right_sidebar {
+            self.right_sidebar.refresh_story();
+        }
     }
 
     /// Update `new_pieces` with any newly generated pieces of text.
@@ -830,68 +985,128 @@ impl App {
     fn update_generation(&mut self, new_pieces: &mut Vec<String>) {
         use settings::GenerativeBackend;
 
-        if !self.generation_in_progress {
-            return;
-        }
-
         match self.settings.selected_generative_backend {
             #[cfg(all(feature = "drama_llama", not(target_arch = "wasm32")))]
             GenerativeBackend::DramaLlama => {
                 // Handle responses from the drama llama worker.
-                match self.drama_llama_worker.try_recv() {
-                    Some(Err(e)) => match e {
-                        std::sync::mpsc::TryRecvError::Empty => {
-                            // The channel is empty. This is normal.
-                        }
-                        std::sync::mpsc::TryRecvError::Disconnected => {
-                            eprintln!(
-                            "`drama_llama` worker disconnected unexpectedly."
-                        );
-                            // This should not happen, but it can if the worker
-                            // panics. This indicates a bug in `drama_llama`.
-                            if let Err(err) = self.drama_llama_worker.shutdown()
-                            {
-                                eprintln!(
-                                    "Worker thread died because: {:?}",
-                                    err
-                                );
+                while let Some(result) = self.drama_llama_worker.try_recv() {
+                    match result {
+                        Err(e) => {
+                            match &e {
+                            crate::drama_llama::Error::LoadError { .. } => {
+                                self.settings.loading_model = None;
+                                if let Some(settings) = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                {
+                                    if let settings::BackendOptions::DramaLlama {
+                                        model,
+                                        ..
+                                    } = settings
+                                    {
+                                        *model = "".into();
+                                    }
+                                }
                             }
-                            self.generation_in_progress = false;
+                            crate::drama_llama::Error::ContextTooLarge {
+                                supported,
+                                ..
+                            } => {
+                                // We shouldn't reach here because we check
+                                // the context size before starting generation.
+                                if let settings::BackendOptions::DramaLlama {
+                                    predict_options,
+                                    max_context_size,
+                                    ..
+                                } = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                    .unwrap()
+                                {
+                                    let limit = (*supported).max(512);
+                                    *max_context_size = limit;
+                                    predict_options.n =
+                                        limit.try_into().unwrap();
+                                }
+                            }
+                            _ => {}
                         }
-                    },
-                    Some(Ok(response)) => match response {
-                        // The worker has generated a new piece of text, we add
-                        // it to the story.
-                        crate::drama_llama::Response::Predicted { piece } => {
-                            new_pieces.push(piece);
-                            self.right_sidebar.refresh_story();
+                            // Something went wrong. We can unlock the UI now.
+                            self.generation_ui_locked = false;
+                            self.errors.push(e.to_string().into());
                         }
-                        crate::drama_llama::Response::Done => {
-                            // Trim whitespace from the end of the story. The
-                            // Predictor currently keeps any end sequence, which
-                            // might be whitespace.
-                            // TODO: add a setting to control this behavior in
-                            // `drama_llama`
-                            if let Some(story) = self.story_mut() {
-                                story.head_mut().trim_end_whitespace();
+                        Ok(response) => match response {
+                            // The worker has generated a new piece of text, we add
+                            // it to the story.
+                            crate::drama_llama::Response::Predicted {
+                                piece,
+                            } => {
+                                new_pieces.push(piece);
                                 self.right_sidebar.refresh_story();
                             }
-                            // We can unlock the UI now.
-                            self.generation_in_progress = false;
-                        }
-                        crate::drama_llama::Response::Busy { request } => {
-                            // This might happen because of data races, but really
-                            // shouldn't.
-                            // TODO: make a macro for all these error messages.
-                            self.errors.push(format!(
+                            crate::drama_llama::Response::Done => {
+                                // Trim whitespace from the end of the story. The
+                                // Predictor currently keeps any end sequence, which
+                                // might be whitespace.
+                                // TODO: add a setting to control this behavior in
+                                // `drama_llama`
+                                if let Some(story) = self.story_mut() {
+                                    story.head_mut().trim_end_whitespace();
+                                    self.right_sidebar.refresh_story();
+                                }
+                                // We can unlock the UI now. Worker is done with
+                                // generation.
+                                self.generation_ui_locked = false;
+                            }
+                            crate::drama_llama::Response::Busy { request } => {
+                                // This might happen because of data races, but really
+                                // shouldn't.
+                                self.errors.push(format!(
                                 "Unexpected request sent to worker. Report this please: {:?}",
                                 request
                             ).into());
-                        }
-                    },
-                    None => {
-                        // Worker is dead.
-                        self.generation_in_progress = false;
+                            }
+                            crate::drama_llama::Response::LoadedModel {
+                                model: new_model,
+                                max_context_size: new_max_context_size,
+                                metadata: new_metadata,
+                            } => {
+                                // We can unlock the UI. The model is loaded.
+                                self.settings.loading_model = None;
+                                self.generation_ui_locked = false;
+                                if let Some(settings) = self
+                                    .settings
+                                    .backend_options
+                                    .get_mut(&GenerativeBackend::DramaLlama)
+                                {
+                                    if let settings::BackendOptions::DramaLlama {
+                                    model,
+                                    max_context_size,
+                                    predict_options,
+                                    metadata,
+                                    ..
+                                } = settings
+                                {
+                                    *metadata = Some(new_metadata);
+                                    *model = new_model;
+                                    *max_context_size =
+                                        new_max_context_size.max(512);
+                                    predict_options.n = predict_options.n.min(
+                                        (*max_context_size).try_into().unwrap(),
+                                    );
+                                }
+                                }
+                            }
+                            crate::drama_llama::Response::Error { .. } => {
+                                // FIXME: we could remove this by making the
+                                // receiver take a Result. That would be cleaner.
+                                unreachable!(
+                                    "Error responses are handled in try_recv."
+                                );
+                            }
+                        },
                     }
                 }
             }
@@ -911,7 +1126,7 @@ impl App {
                         if let Some(story) = self.story_mut() {
                             story.head_mut().trim_end_whitespace();
                         }
-                        self.generation_in_progress = false;
+                        self.generation_ui_locked = false;
                     }
                     crate::openai::Response::Busy { request } => {
                         self.errors.push(format!(
@@ -934,11 +1149,176 @@ impl App {
                 },
                 None => {
                     // Worker is dead.
-                    self.generation_in_progress = false;
+                    self.generation_ui_locked = false;
                 }
             },
             #[allow(unreachable_patterns)] // because conditional compilation
             _ => {}
+        }
+    }
+
+    /// Save active story to JSON.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_json(&mut self) {
+        self.save(true)
+    }
+
+    /// Export active story to Markdown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_to_markdown(&mut self) {
+        self.save(false)
+    }
+
+    /// Helper function for `save_to_json` and `export_to_markdown`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save(&mut self, json: bool) {
+        use std::path::Path;
+        let title = if json {
+            "Save Story to JSON"
+        } else {
+            "Export Story to Markdown"
+        };
+        let ext = if json { "json" } else { "md" };
+        let mut dialog = egui_file::FileDialog::save_file(None)
+            .title(title)
+            .show_files_filter(Box::new(move |path: &Path| {
+                path.extension().map_or(false, |e| e == ext)
+            }));
+        dialog.open();
+
+        // This will be displayed next frame. It's handled below in
+        // `handle_save_dialog`.
+        self.saving_txt = !json;
+        self.save_dialog = Some(dialog);
+    }
+
+    /// Load story from JSON.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_from_json(&mut self) {
+        let mut dialog = egui_file::FileDialog::open_file(None)
+            .title("Load Story from JSON")
+            .show_files_filter(Box::new(|path| {
+                path.extension().map_or(false, |ext| ext == "json")
+            }));
+        dialog.open();
+
+        self.save_dialog = Some(dialog);
+    }
+
+    /// Handle save dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn handle_save_dialog(&mut self, ctx: &egui::Context) {
+        let dialog = if let Some(dialog) = &mut self.save_dialog {
+            dialog
+        } else {
+            return;
+        };
+
+        if dialog.show(ctx).selected() {
+            if let Some(path) = dialog.path() {
+                match dialog.dialog_type() {
+                    egui_file::DialogType::OpenFile => {
+                        let text = match std::fs::read_to_string(path) {
+                            Ok(text) => text,
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to read `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        };
+                        let story: Story = match serde_json::from_str(&text) {
+                            Ok(story) => story,
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to parse `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        };
+
+                        self.stories.push(story);
+                    }
+                    egui_file::DialogType::SaveFile => {
+                        let active_story_index = match self.active_story {
+                            Some(i) => i,
+                            None => {
+                                self.errors
+                                    .push("No active story to save.".into());
+                                return;
+                            }
+                        };
+
+                        let payload = if self.saving_txt {
+                            self.stories[active_story_index].to_string()
+                        } else {
+                            match serde_json::to_string(
+                                &self.stories[active_story_index],
+                            ) {
+                                Ok(json) => json,
+                                Err(e) => {
+                                    self.errors.push(format!(
+                                                "Failed to serialize stories because: {}",
+                                                e
+                                            ).into());
+                                    return;
+                                }
+                            }
+                        };
+
+                        match std::fs::write(path, payload) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                self.errors.push(
+                                    format!(
+                                        "Failed to write `{:?}` because: {}",
+                                        path, e
+                                    )
+                                    .into(),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    egui_file::DialogType::SelectFolder => {
+                        unreachable!(
+                            "Because we don't instantiate this type above."
+                        )
+                    }
+                }
+            }
+            self.save_dialog = None;
+        }
+    }
+
+    /// Draw clipboard.
+    pub fn draw_clipboard(&mut self, ctx: &egui::Context) {
+        if let Some(node) = &self.node_clipboard {
+            egui::TopBottomPanel::bottom("clipboard").show(ctx, |ui| {
+                let mut text =
+                    node.to_string().chars().take(20).collect::<String>();
+                text.push_str(&format!("... (and {} children)", node.count()));
+                ui.horizontal(|ui| ui.label("Clipboard:") | ui.label(text))
+            });
+        }
+    }
+
+    /// Draw toolbar.
+    ///
+    /// Contains common like saving, loading, layout toggles, etc.
+    pub fn draw_toolbar(&mut self, ctx: &egui::Context) {
+        if self.active_story.is_some() {
+            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+                ui.horizontal(|ui| self.settings.layout.ui(ui));
+            });
         }
     }
 
@@ -949,6 +1329,93 @@ impl App {
         _frame: &mut eframe::Frame,
     ) {
         ctx.input(|input| {
+            // Command + key shortcuts
+            if input.modifiers.command && !input.modifiers.shift {
+                // Command + N: New empty paragraph with the default author.
+                // this code ensures that the author exists first because in our
+                // API, a panic will occur if the author does not exist. (We
+                // will probably change this in the future.)
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::N)
+                {
+                    let author = self.settings.default_author.clone();
+                    if let Some(story) = self.story_mut() {
+                        let id = story.add_author(author);
+                        story.add_empty_paragraph(id);
+                    }
+                }
+                // Command + S: Save story to JSON.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_ui_locked
+                    && self.active_story.is_some()
+                    && input.key_pressed(egui::Key::S)
+                {
+                    self.save_to_json();
+                }
+                // Command + O: Load story from JSON.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::O)
+                {
+                    self.load_from_json();
+                }
+                // Command + DELETE: Delete selected node.
+                if !self.generation_ui_locked
+                    && input.key_pressed(egui::Key::Delete)
+                {
+                    if let Some(story) = self.story_mut() {
+                        story.decapitate();
+                    }
+                }
+                // Command + ,: Cut selected node.
+                if !self.generation_ui_locked
+                    && input.key_pressed(egui::Key::Comma)
+                {
+                    if let Some(story) = self.story_mut() {
+                        self.node_clipboard = story.decapitate();
+                    }
+                }
+                // Command + .: Paste node from clipboard.
+                if !self.generation_ui_locked
+                    && input.key_pressed(egui::Key::Period)
+                {
+                    let node = self.node_clipboard.take();
+                    if let Some(story) = self.story_mut() {
+                        if let Some(node) = node {
+                            story.paste_node(node);
+                        }
+                    } else {
+                        // Put the node back. We do this because multiple
+                        // mutable references to self are not allowed.
+                        self.node_clipboard = node;
+                    }
+                }
+            }
+            // Command + Shift + key shortcuts
+            if input.modifiers.command && input.modifiers.shift {
+                // Command + Shift + S: Export story to Markdown.
+                #[cfg(not(target_arch = "wasm32"))]
+                if !self.generation_ui_locked
+                    && self.active_story.is_some()
+                    && input.key_pressed(egui::Key::S)
+                {
+                    self.export_to_markdown();
+                }
+                // Command + Shift + N: New story with the default author.
+                if !self.generation_ui_locked && input.key_pressed(egui::Key::N)
+                {
+                    let author = self.settings.default_author.clone();
+                    self.new_story("Untitled".to_string(), author);
+                }
+                // Command + Shift + DELETE: Delete active story.
+                if !self.generation_ui_locked
+                    && input.key_pressed(egui::Key::Delete)
+                {
+                    if let Some(i) = self.active_story {
+                        self.stories.remove(i);
+                        self.active_story = None;
+                    }
+                }
+            }
+            // Key shortcuts
             if input.key_pressed(egui::Key::Escape) {
                 self.left_sidebar.visible = !self.left_sidebar.visible;
             }
@@ -965,13 +1432,22 @@ impl eframe::App for App {
         ctx: &eframe::egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        self.handle_input(ctx, frame);
-        if self.draw_error_messages(ctx) {
-            // An error message is displayed. We skip the rest of the UI.
+        self.update_time_step(ctx);
+        if self.handle_errors(ctx) {
+            // An error message is displayed. We skip the rest of the UI. This
+            // is how we do "modal" in egui.
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.handle_save_dialog(ctx);
+        }
+        self.handle_input(ctx, frame);
+        // handle any dialog that might be open
         self.draw_left_sidebar(ctx, frame);
         self.draw_right_sidebar(ctx, frame);
+        self.draw_toolbar(ctx);
+        self.draw_clipboard(ctx);
         self.draw_central_panel(ctx, frame);
     }
 
@@ -979,12 +1455,15 @@ impl eframe::App for App {
         let serialized_stories = serde_json::to_string(&self.stories).unwrap();
         let serialized_settings =
             serde_json::to_string(&self.settings).unwrap();
+        let serialized_trash = serde_json::to_string(&self.trash).unwrap();
 
         log::debug!("Saving stories: {}", serialized_stories);
         log::debug!("Saving settings: {}", serialized_settings);
+        log::debug!("Saving trash: {}", serialized_trash);
 
         storage.set_string("stories", serialized_stories);
         storage.set_string("settings", serialized_settings);
+        storage.set_string("trash", serialized_trash);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

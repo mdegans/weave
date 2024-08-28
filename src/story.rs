@@ -10,6 +10,14 @@ pub enum AuthorID {
     ID(u8),
 }
 
+#[cfg(feature = "gui")]
+pub enum DrawMode {
+    /// Draw story as nodes, as usual.
+    Nodes,
+    /// Draw story as a collapsible tree.
+    Tree,
+}
+
 impl From<&str> for AuthorID {
     fn from(author: &str) -> Self {
         Self::String(author.to_string())
@@ -103,6 +111,14 @@ impl Story {
             .map(|(id, author)| (id as u8, author.as_str()))
     }
 
+    /// Add a node to the story's head node.
+    pub fn paste_node(&mut self, mut node: Node<Meta>) {
+        // We do this for now to avoid a crash. We can't transfer author ids
+        // between stories yet, so we reset them to the head's author.
+        node.set_author(self.head().author_id);
+        self.head_mut().add_child(node);
+    }
+
     /// Add paragraph to the story's head node.
     ///
     /// # Panics
@@ -126,6 +142,12 @@ impl Story {
         }
     }
 
+    /// Add an empty paragraph to the story's head node.
+    pub fn add_empty_paragraph(&mut self, author: impl Into<AuthorID>) {
+        const EMPTY: std::iter::Empty<String> = std::iter::empty();
+        self.add_paragraph(author, EMPTY);
+    }
+
     /// Extend the current paragraph with strings.
     pub fn extend_paragraph(
         &mut self,
@@ -142,20 +164,31 @@ impl Story {
         &mut self,
         ui: &mut egui::Ui,
         lock_topology: bool,
+        layout: crate::node::Layout,
+        mode: DrawMode,
+        time_step: f32,
     ) -> Option<crate::node::Action> {
         use crate::node::PathAction;
+
+        let selected_path = self.active_path.as_ref().map(|v| v.as_slice());
 
         // Draw, and update active path if changed.
         if let Some(PathAction { path, mut action }) = self.root.draw(
             ui,
-            self.active_path.as_ref().map(|v| v.as_slice()),
+            selected_path,
             lock_topology,
+            layout,
+            mode,
+            time_step,
         ) {
-            self.active_path = Some(path);
+            if !lock_topology {
+                // Any action unless we're locked should update the active path.
+                self.active_path = Some(path);
+            }
             // FIXME: as it turns out all the actions are mutually exclusive,
             // so we can probably use an enum rather than a struct. The user can
             // only do one thing at a time, barring the UI hanging or something.
-            if action.delete {
+            if !lock_topology && action.delete {
                 // We can handle this here.
                 self.decapitate();
                 action.modified = true;
@@ -171,7 +204,7 @@ impl Story {
     /// Remove the head as well as all its children.
     ///
     /// Note: The root node is never removed.
-    pub fn decapitate(&mut self) {
+    pub fn decapitate(&mut self) -> Option<Node<Meta>> {
         if let Some(path) = &mut self.active_path {
             if path.is_empty() {
                 // There is always at least one node in the story.
@@ -182,11 +215,13 @@ impl Story {
                 for i in path {
                     node = &mut node.children[*i];
                 }
-                // This wil now be the parent of the head node. We remove the
+                // This will now be the parent of the head node. We remove the
                 // child index we just popped.
-                node.children.remove(head_index);
+                return Some(node.children.remove(head_index));
             }
         }
+
+        return None;
     }
 
     /// Convert the story to a string with options
@@ -292,6 +327,8 @@ impl std::fmt::Display for Story {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -313,5 +350,27 @@ mod tests {
             .for_each(|(id, &author)| {
                 assert_eq!(Some(id as u8), story.get_author(author));
             });
+    }
+
+    // This tests we don't break backwards compatibility with the old format.
+    #[test]
+    fn test_story_deserialize() {
+        let json_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test")
+            .join("data")
+            .join("sharks.0.0.3.json");
+
+        assert!(json_path.exists(), "Test data not found: {:?}", json_path);
+
+        let json = std::fs::read_to_string(json_path).unwrap();
+        let story: Story = serde_json::from_str(&json).unwrap();
+        assert_eq!(story.title, "Electrocuting Sharks");
+        assert_eq!(story.root.count(), 23);
+        let mut len = 0;
+        for node in story.root.iter_depth_first() {
+            len += node.text.len();
+        }
+        assert_eq!(len, 7453);
+        // We're not checking the format or display because they may change.
     }
 }

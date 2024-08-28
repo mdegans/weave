@@ -455,14 +455,10 @@ pub(crate) enum Response {
     // we will have multiple heads). We will have to lock the UI as well to
     // prevent some cases like deleting a head while it's generating, however
     // starting new generations should be fine.
-    // TODO: Handle the above carefully in the App. Try to break it.
     Busy { request: Request },
     /// The worker has predicted a piece of text along with OpenAI specific
     /// metadata
     // (since we're actually paying for it, might as well use it).
-    // TODO: the `openai_rust` crate does not support logprobs, which I *do*
-    // want to use eventually. I'll have to, add it to the crate, use `reqwest`
-    // directly, or use another crate.
     Predicted { piece: String },
 }
 
@@ -496,14 +492,6 @@ impl Worker {
         // and it's possible the UI might be blocked. For example, the ui does
         // not update unless it's interacted with and so the channel might fill
         // up, quite easily.
-        // TODO: while generation is in progress, the ui should probably check
-        // for this at regular intervals. The UI should likewise be redrawn
-        // since otherwise you don't see the actual progress. Currently the
-        // `try_recv` call in the main thread is only called when the user
-        // interacts with the UI. The easiest temporary fix is to just call
-        // every frame, and then we can optimize later. It's only downside is
-        // CPU usage. There may be a regular interval function in egui that we
-        // can use during generation.
         let (mut  to_main, from_worker) = futures::channel::mpsc::channel(4096);
 
         // Spawn the actual worker thread.
@@ -517,7 +505,7 @@ impl Worker {
             let client = Client::new(&api_key);
 
             rt.block_on(async move {
-                // The logic here is syncronous. We do want to wait for one
+                // The logic here is synchronous. We do want to wait for one
                 // request to finish before starting the next one. Otherwise we
                 // could use `for_each_concurrent` or something, but we would
                 // have to associate the requests with the appropriate nodes.
@@ -727,7 +715,7 @@ impl Worker {
         }
 
         if let Some(_) = self.from_worker.take() {
-            // Reciever dropped. This will also cause the worker to terminate
+            // Receiver dropped. This will also cause the worker to terminate
             // depending on which happens first.
         }
 
